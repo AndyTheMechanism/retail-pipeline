@@ -34,6 +34,10 @@ help: ## Показать список целей
 # засчитает временный сервер, и следующая команда упрется в "the database
 # system is shutting down". По TCP он в этот момент не отвечает.
 up: ## Поднять Postgres и дождаться готовности
+	@command -v $(ENGINE) >/dev/null 2>&1 || { \
+		echo 'Не найден движок контейнеров: нужен docker или podman.'; \
+		echo 'На Windows запускать под WSL2 - нативной поддержки Makefile там нет.'; \
+		exit 1; }
 	$(COMPOSE) up -d
 	@printf 'Жду готовности базы'
 	@for i in $$(seq 1 60); do \
@@ -59,7 +63,16 @@ reset: ## Снести контейнер вместе с данными - сл�
 psql: ## Открыть psql в контейнере, ставить клиент на хост не нужно
 	$(ENGINE) exec -it $(DB_CONTAINER) psql -U $(DB_USER) -d $(DB_NAME)
 
+# Проверка перед сборкой окружения. На Debian и Ubuntu - а значит и в типичной
+# WSL - модуль venv поставляется отдельным пакетом, и без него python3 -m venv
+# падает с сообщением про ensurepip, по которому непонятно, что делать.
+# Пять строк здесь дешевле одного такого тупика у проверяющего.
 $(VENV): requirements.txt
+	@python3 -c 'import ensurepip' >/dev/null 2>&1 || { \
+		echo 'Нет модуля venv для python3.'; \
+		echo '  Debian, Ubuntu, WSL:  sudo apt install -y python3-venv'; \
+		echo '  Fedora:               sudo dnf install -y python3'; \
+		exit 1; }
 	python3 -m venv $(VENV)
 	$(VENV)/bin/pip -q install --upgrade pip
 	$(VENV)/bin/pip -q install -r requirements.txt
