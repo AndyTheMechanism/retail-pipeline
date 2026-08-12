@@ -1,119 +1,126 @@
-# Пайплайн розничной воронки
+[Read in English](README.md) | [Читать на русском языке](README.ru.md)
 
-Ежедневный пайплайн, который считает выручку розничной сети по магазинам,
-переживает поздние возвраты и битые источники и **никогда не меняет вчерашнее
-число молча.**
+# Retail Funnel Pipeline
 
-Стек: PostgreSQL, dbt, Airflow, Python. Данные синтетические, генератор входит
-в состав репозитория и детерминирован по seed.
+A daily pipeline that computes a retail chain's revenue per store, survives
+late returns and broken sources, and **never changes yesterday's number
+silently.**
 
-> **Состояние: этап 1 из 6.** Есть база и сырой слой с данными. Моделей,
-> тестов и оркестрации еще нет. Что именно не сделано, видно ниже и по
-> выводу `make`.
+Stack: PostgreSQL, dbt, Airflow, Python. The data is synthetic; the generator
+lives in this repository and is deterministic under a seed.
 
-## Запустить
+> **Status: stage 1 of 6.** The database and the raw layer with data are in
+> place. Models, tests and orchestration are not. What is missing is listed
+> below and printed by `make`.
 
-```bash
-make seed    # поднять базу, собрать окружение и сгенерировать данные
-make psql    # зайти в базу
-make down    # остановить, данные сохранятся
-```
-
-`make seed` делает все сам: поднимает Postgres, создает виртуальное окружение,
-применяет схему и загружает горизонт в полтора года. На чистом клоне это
-единственная нужная команда. Занимает около минуты.
+## Run it
 
 ```bash
-make defects          # где именно заложены дефекты
-make measure-returns  # распределение задержки возвратов
-make verify           # контрольные суммы таблиц
-make seed-day DATE=2026-03-14   # пересобрать одну партицию
+make seed    # start the database, build the environment, generate the data
+make psql    # open a shell on the database
+make down    # stop; the data survives
 ```
 
-## Данные
+`make seed` does everything itself: starts Postgres, creates the virtual
+environment, applies the schema and loads an eighteen-month horizon. On a fresh
+clone it is the only command you need. It takes about a minute.
 
-Полтора года, 120 магазинов, около 1,5 млн заказов и 3,6 млн позиций. Объем
-выбран не для красоты: на таком размере план запроса начинает что-то значить,
-а на игрушечном - нет.
+You need a container engine and `make`. Which engine does not matter: `make up`
+detects whether you have docker or podman and calls the right compose. There is
+no need to install a `psql` client on the host — `make psql` opens one inside
+the container. On Windows, run this under WSL2: the entry point here is a
+Makefile, and native Windows has none.
 
-Генератор детерминирован по сиду, поэтому данные не коммитятся - коммитится
-то, что их порождает. Два прогона подряд дают побайтово то же состояние базы,
-и это проверяется командой `make verify`, а не обещанием.
+Nothing needs configuring before the first run — every variable has a default.
+To override one, say a port that is already taken, use `.env`; a template sits
+in `.env.example`.
 
-Горизонт задан фиксированными датами, а не отсчетом от сегодня. Иначе
-вчерашний прогон и сегодняшний давали бы разное, и проверка на повторяемость
-сохраняла бы только видимость.
+```bash
+make defects          # where the defects are planted
+make measure-returns  # distribution of return delay
+make verify           # table checksums
+make seed-day DATE=2026-03-14   # rebuild a single partition
+```
 
-### Дефекты заложены намеренно
+For the full list of targets, run `make` with no arguments.
 
-Пять штук, и они лежат в **сыром слое, до всякого пайплайна**: поздние
-возвраты, пропущенная партиция, дубли строк выгрузки, битый счетчик трафика,
-выбросы. Дефект, подогнанный под тест, доказывает лишь то, что тест умеет
-ловить сам себя.
+## The data
 
-Где они лежат - печатает `make defects`. Проверки, которые их поймают,
-появятся на этапе 3.
+Eighteen months, 120 stores, roughly 1.5M orders and 3.6M order lines. The
+volume is not decoration: at this size a query plan starts to mean something,
+and at a toy size it does not.
 
-### Загрузка идет только через delete-and-insert по дате
+The generator is deterministic under a seed, so the data is not committed —
+what produces it is. Two consecutive runs leave the database in the same state,
+and `make verify` demonstrates that rather than promising it.
 
-Ни `insert`, ни `truncate`, ни `upsert`. Повторный прогон за ту же дату
-обязан давать то же состояние, а не задвоение и не потерю соседних дат.
-Отсюда же берется безопасность пересчета на этапе 4: `make seed-day` за любую
-дату можно звать сколько угодно раз.
+The horizon is a pair of fixed dates rather than an offset from today.
+Otherwise yesterday's run and today's would differ, and the repeatability check
+would keep nothing but its appearance.
 
-Партиция возвратов режется по **дате возврата**, а не по дате заказа - возврат
-приезжает своим днем и меняет выручку прошлого. Поэтому пересборка партиции
-за дату оглядывается на 30 дней назад и восстанавливает те же возвраты, что
-дал бы полный прогон. Проверено сравнением контрольных сумм.
+### The defects are planted on purpose
 
-Нужен только движок контейнеров. `make up` сам определит, docker у вас или
-podman, и вызовет нужный compose. Клиент `psql` на хост ставить не надо -
-`make psql` открывает его внутри контейнера.
+Five of them, and they sit in the **raw layer, ahead of any pipeline**: late
+returns, a missing partition, duplicated export rows, a broken traffic counter,
+and outliers. A defect fitted to a test only proves that the test can catch
+itself.
 
-Настраивать перед первым запуском нечего: у всех переменных есть значения по
-умолчанию. Переопределить что-то - например, занятый порт - можно через `.env`,
-образец лежит в `.env.example`.
+`make defects` prints where they are. The checks that catch them arrive at
+stage 3.
 
-Полный список целей - `make` без аргументов.
+### Loading is delete-and-insert by date, and nothing else
 
-## Как это устроено
+Not `insert`, not `truncate`, not `upsert`. Re-running a given date must leave
+the same state behind — not doubled rows, and not missing neighbours. The same
+property is what will make reprocessing safe at stage 4: `make seed-day` can be
+called on any date as many times as you like.
 
-Один контейнер с Postgres и две базы в нем: `warehouse` под сырой слой и
-витрины, `airflow_meta` под метаданные планировщика. Airflow ставится локально
-в venv на этапе 4, в контейнер не заворачивается: читать логи и отлаживать так
-заметно проще, а отладка - ровно то, что этот проект показывает.
+The returns partition is keyed on the **return date**, not the order date —
+a return arrives on its own day and changes the revenue of an earlier one. So
+rebuilding one partition looks 30 days back and reconstructs exactly the
+returns a full run would have produced. Verified by comparing checksums.
 
-Официальный compose-файл Airflow не используется намеренно. В нем восемь
-сервисов и больше двухсот строк; объяснить их за минуту нельзя, а объяснимость
-здесь - требование к проекту.
+## How it is put together
 
-## Три вопроса, на которые этот файл должен отвечать
+One Postgres container holding two databases: `warehouse` for the raw layer and
+the marts, `airflow_meta` for scheduler metadata. Airflow itself will be
+installed into a local venv at stage 4 rather than containerised — reading logs
+and debugging is markedly easier that way, and debugging is precisely what this
+project is meant to show.
 
-Разделу нужны ответы, а не заголовки: к этапу 6 он растворяется в тексте выше,
-и по README должно быть понятно без единого вопросительного знака -
+The official Airflow compose file is deliberately not used. It carries eight
+services and over two hundred lines; they cannot be explained in a minute, and
+being explainable is a requirement here.
 
-1. **что происходит, когда задача падает** - какие проверки останавливают
-   цепочку, что при этом не публикуется и как об этом узнают;
-2. **как пересчитать за прошлый период** - одной командой, с тем же
-   результатом, без ручной процедуры из шести шагов;
-3. **почему тест роняет цепочку, а не пишет предупреждение в лог** - и где
-   проходит граница между "стоп" и "флаг".
+## Three questions this file has to answer
 
-Пока пусто: отвечать нечем, механики еще нет. Пункт существует, чтобы к концу
-работы это не забылось и не свелось к трем заголовкам с общими словами.
+The section needs answers, not headings: by stage 6 it dissolves into the text
+above, and the README should make all three plain without a single question
+mark —
 
-## Чего еще нет
+1. **what happens when a task fails** — which checks stop the chain, what is
+   left unpublished as a result, and how anyone finds out;
+2. **how to reprocess an earlier period** — one command, same result, no
+   six-step manual procedure;
+3. **why a test breaks the chain instead of logging a warning** — and where the
+   line between "stop" and "flag" runs.
 
-| Этап | Что появится | Готово, когда |
+Empty for now: there is nothing to answer with, the machinery does not exist
+yet. The section exists so that by the end this is neither forgotten nor
+reduced to three headings full of generalities.
+
+## What is not there yet
+
+| Stage | What arrives | Done when |
 |---|---|---|
-| 0. Каркас | База, Makefile, каркас репозитория | `make up` поднимает базу ✅ |
-| 1. Данные | Генератор синтетики, схема `raw`, заложенные дефекты | `make seed` дважды дает то же состояние ✅ |
-| 2. Слои dbt | staging, intermediate, витрины продаж и конверсии | `dbt run` собирает витрины |
-| 3. Тесты-гейты | Инварианты со стопом, проверки с флагом | Битые данные не публикуются |
-| 4. Airflow | DAG, идемпотентность, окно пересчета, бэкфилл | Пересчет за прошлый день - одна команда |
-| 5. Ревизии | Журнал ревизий и три сценария отладки | Каждый сценарий воспроизводится с нуля |
-| 6. Документация | Словарь, линейдж, глава про план запроса | Выполнены все шесть критериев готовности |
+| 0. Skeleton | Database, Makefile, repository skeleton | `make up` brings the database up ✅ |
+| 1. Data | Synthetic generator, `raw` schema, planted defects | `make seed` twice leaves the same state ✅ |
+| 2. dbt layers | staging, intermediate, sales and conversion marts | `dbt run` builds the marts |
+| 3. Test gates | Invariants that stop, checks that flag | Broken data is not published |
+| 4. Airflow | DAG, idempotency, reprocessing window, backfill | Reprocessing a past day is one command |
+| 5. Revisions | Revision log and three debugging scenarios | Every scenario reproduces from scratch |
+| 6. Documentation | Dictionary, lineage, the query-plan chapter | All six completion criteria are met |
 
-## Лицензия
+## Licence
 
-MIT, файл [`LICENSE`](LICENSE).
+MIT, see [`LICENSE`](LICENSE).
