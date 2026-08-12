@@ -1,0 +1,29 @@
+# Окружение
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.env
+
+# Данные не коммитятся: коммитится генератор и seed
+data/
+*.csv
+*.parquet
+*.xlsx
+
+# Airflow
+airflow/logs/
+airflow/airflow.db
+airflow/airflow-webserver.pid
+airflow/standalone_admin_password.txt
+
+# dbt
+target/
+dbt_packages/
+logs/
+.user.yml
+
+# Редакторы и система
+.idea/
+.vscode/
+.DS_Store

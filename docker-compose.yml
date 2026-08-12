@@ -1,0 +1,41 @@
+# Один сервис - Postgres. Airflow ставится локально в venv на этапе 4.
+#
+# Официальный compose-файл Airflow не берется намеренно: восемь сервисов и
+# больше двухсот строк, объяснить их за минуту нельзя, а объяснимость здесь -
+# требование к проекту, а не пожелание.
+
+services:
+  postgres:
+    # Имя образа полное, а не короткое: rootless podman на короткое имя
+    # переспрашивает, из какого реестра тянуть, и неинтерактивный `make up`
+    # на этом встает.
+    image: docker.io/library/postgres:16
+    container_name: retail-pipeline-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pipeline}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pipeline}
+      POSTGRES_DB: warehouse
+    ports:
+      # Слушать только localhost. Пароль по умолчанию тривиальный - он и
+      # должен быть таким, чтобы проект заводился без настройки, - но тогда
+      # база не должна торчать наружу с чужого Wi-Fi.
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # :Z - метка SELinux. Без нее на Fedora контейнер не прочитает
+      # каталог инициализации, а ошибка будет выглядеть как "база пустая".
+      - ./db/init:/docker-entrypoint-initdb.d:ro,Z
+    healthcheck:
+      # -h 127.0.0.1 обязательно. Пока выполняются скрипты инициализации,
+      # Postgres поднимает временный сервер на одном unix-сокете, без TCP.
+      # Проверка через сокет засчитает его как готовый, после чего сервер
+      # уйдет на перезапуск - и следующая же команда получит "the database
+      # system is shutting down". По TCP временный сервер не отвечает, и
+      # готовность становится честной.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER:-pipeline} -d warehouse"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  pgdata:
