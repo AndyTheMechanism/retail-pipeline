@@ -11,8 +11,17 @@ DB_CONTAINER := retail-pipeline-db
 DB_USER      := pipeline
 DB_NAME      := warehouse
 
+VENV := .venv
+PY   := $(VENV)/bin/python
+
+# Если рядом лежит .env - подхватить и передать генератору. Файл
+# необязательный: значения по умолчанию совпадают с docker-compose.yml, и на
+# чистом клоне все работает без него.
+-include .env
+export
+
 .DEFAULT_GOAL := help
-.PHONY: help up down reset psql seed run test backfill
+.PHONY: help up down reset psql venv seed seed-day defects verify measure-returns run test backfill
 
 help: ## Показать список целей
 	@echo 'Пайплайн розничной воронки. Движок: $(ENGINE)'
@@ -50,14 +59,35 @@ reset: ## Снести контейнер вместе с данными - сл�
 psql: ## Открыть psql в контейнере, ставить клиент на хост не нужно
 	$(ENGINE) exec -it $(DB_CONTAINER) psql -U $(DB_USER) -d $(DB_NAME)
 
-# Цели ниже объявлены здесь с первого дня намеренно: они задают форму проекта
-# и не дают ей поплыть. Пока этап не сделан - цель честно падает, а не делает
-# вид, что отработала.
+$(VENV): requirements.txt
+	python3 -m venv $(VENV)
+	$(VENV)/bin/pip -q install --upgrade pip
+	$(VENV)/bin/pip -q install -r requirements.txt
+	@touch $(VENV)
 
-seed: ## Загрузить синтетику (этап 1)
-	@echo 'Этап 1 не сделан: генератора синтетики еще нет.'
-	@echo 'Условие приемки: make seed дважды подряд дает идентичное состояние базы.'
-	@exit 1
+venv: $(VENV) ## Собрать виртуальное окружение
+
+# seed сам поднимает базу и собирает окружение. Иначе "воспроизводится одной
+# командой" превратилось бы в три команды с примечанием.
+seed: up $(VENV) ## Сгенерировать и загрузить синтетику за весь горизонт
+	$(PY) -m generator seed
+
+seed-day: up $(VENV) ## Пересобрать одну партицию: make seed-day DATE=2026-03-14
+	@test -n "$(DATE)" || { echo 'Нужна дата: make seed-day DATE=2026-03-14'; exit 1; }
+	$(PY) -m generator day $(DATE)
+
+defects: $(VENV) ## Показать карту заложенных дефектов
+	$(PY) -m generator defects
+
+verify: up $(VENV) ## Контрольные суммы таблиц - чем проверяется повторяемость
+	$(PY) -m generator verify
+
+measure-returns: up $(VENV) ## Распределение задержки возвратов, вход для этапа 4
+	$(PY) -m generator measure-returns
+
+# Цели ниже объявлены с первого дня намеренно: они задают форму проекта и не
+# дают ей поплыть. Пока этап не сделан - цель честно падает, а не делает вид,
+# что отработала.
 
 run: ## Прогнать пайплайн за дату (этапы 2-4)
 	@echo 'Этапы 2-4 не сделаны: моделей dbt и DAG еще нет.'
