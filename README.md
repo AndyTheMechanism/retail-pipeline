@@ -9,22 +9,24 @@ silently.**
 Stack: PostgreSQL, dbt, Airflow, Python. The data is synthetic; the generator
 lives in this repository and is deterministic under a seed.
 
-> **Status: stage 3 of 6.** The database, the raw layer, the marts and the test
-> gates are in place: broken data does not reach the marts, and a flagged store
-> does not take the chain down. Orchestration is not there yet — the marts are
-> built in full, on demand. What is missing is listed below and printed by
-> `make`.
+> **Status: stage 4 of 6.** The pipeline runs: a DAG computes a day on a
+> schedule, broken data never reaches the marts, and reprocessing a past day is
+> one command. The revision log and the documentation are missing — those are
+> stages 5 and 6. What is missing is listed below and printed by `make`.
 
 ## Run it
 
 ```bash
-make seed       # start the database, build the environment, generate the data
-make models     # build the marts behind the gate: failed checks, no rebuild
-make test       # run the checks alone against models already built
-make reconcile  # reconcile the marts against the raw layer
-make psql       # open a shell on the database
-make down       # stop; the data survives
+make seed                                    # start the database, generate the data
+make run DATE=2026-03-14                     # run the pipeline for one date
+make backfill FROM=2026-03-01 TO=2026-03-05  # reprocess a period
+make reconcile                               # reconcile the marts against the raw layer
+make psql                                    # open a shell on the database
+make down                                    # stop; the data survives
 ```
+
+The marts can also be built without the orchestrator, in full: `make models`
+builds them behind the same checks, `make test` runs the checks alone.
 
 `make seed` does everything itself: starts Postgres, creates the virtual
 environment, applies the schema and loads an eighteen-month horizon. On a fresh
@@ -82,8 +84,8 @@ rest of the chain through.
 
 Not `insert`, not `truncate`, not `upsert`. Re-running a given date must leave
 the same state behind — not doubled rows, and not missing neighbours. The same
-property is what will make reprocessing safe at stage 4: `make seed-day` can be
-called on any date as many times as you like.
+property is what makes reprocessing safe: `make seed-day` can be called on any
+date as many times as you like, and the sales mart is written the very same way.
 
 The returns partition is keyed on the **return date**, not the order date —
 a return arrives on its own day and changes the revenue of an earlier one. So
@@ -109,9 +111,9 @@ Hence a rule kept everywhere here: **emptiness is not replaced by zero.** Zero
 means "we counted, and it came to zero"; a null means "there was nothing to
 count".
 
-The marts are built in full: incrementality and the reprocessing window belong
-to stage 4. The checks are already in place and have a section of their own
-below.
+The sales mart is incremental: a daily run rebuilds a window backwards rather
+than the whole history. The window — and why the conversion mart does not have
+one — has a section of its own below, along with the checks.
 
 ### The two decisions people ask about first
 
@@ -208,23 +210,114 @@ stands — on exactly the five dates where duplicates are planted, and by exactl
 the copies removed. No discrepancy anywhere would mean the deduplication did
 nothing.
 
+## The daily run
+
+A DAG of four tasks — exactly the chain from the blueprint:
+
+```
+land_partition -> check_freshness -> build_marts -> publish
+                        |                 |
+                       stop              stop
+```
+
+Fetch the raw data for a date, check freshness, build the marts behind the gate,
+announce what was published. The tasks call the tools as subprocesses rather
+than importing them: the generator, dbt and Airflow have incompatible pins and
+each lives in its own environment. What ties them together is an exit code, and
+that does not break because somebody upgraded a library.
+
+The run date is handed to the tools explicitly rather than read by them off the
+wall clock. Everything rests on it: freshness and the reprocessing window alike.
+A run for a past day must produce exactly what it would have produced then —
+otherwise it is not reprocessing but a new history.
+
+### Reprocessing a past day
+
+```bash
+make run DATE=2026-03-14                     # one day
+make backfill FROM=2026-03-01 TO=2026-03-05  # a period
+```
+
+Verified by checksums rather than by promise: two runs for the same date, five
+consecutive days reprocessed, and a full build from scratch all leave the marts
+bit-for-bit identical. Everything is written with delete-and-insert by key — the
+same technique as the raw load, and for the same reason.
+
+The run goes through `airflow dags test`: the DAG executes in full and
+synchronously, without a scheduler running. For a project that has to start with
+one command that matters more than a demonstration of daemons — dependencies,
+retries and the schedule are declared in the DAG, and it can be run without
+bringing anything up. The web UI, if you want it, is `make airflow`.
+
+### The window is 28 days
+
+A return arrives later than the purchase and changes the revenue of an earlier
+day, so a daily run rebuilds a window backwards rather than a single day. The
+size was measured, not assigned: across 136,116 returns the median is 2 days,
+the 95th percentile 19, the 99th 28.
+
+| Window | Returns left outside | Amount |
+|---|---|---|
+| 14 days | 10.5% | 38.5M |
+| 21 days | 3.47% | 12.6M |
+| **28 days** | **0.78%** | **2.6M** |
+
+Why not 30, when the maximum in the data is exactly 30. Taking the observed
+maximum means fitting the window to the sample and pretending the tail is
+bounded. It is not: the next return may arrive on day 31, and a window equal to
+the maximum will say nothing about it. At 28 days the remainder is caught by the
+`return_outside_window` flag — it currently marks 952 store-days — and the
+window can be widened on its evidence rather than on a quarterly reconciliation.
+
+Worth stating separately, because it is not obvious: **the window is a property
+of a particular mart, not a pipeline-wide setting.** The conversion mart has no
+window at all — neither traffic nor orders are rewritten after the fact, they
+have no second date on which they could arrive later — so a run touches exactly
+the target date. Applying one window everywhere means either computing too much
+or not computing enough.
+
+### Retries and the alert
+
+There are no retries by default. A retry helps against a transient connection
+error and against nothing else: a failed data test will not turn green on the
+second attempt, and three tries only triple the time before a human hears about
+it. The retry sits precisely on the landing task — the only one that reaches
+into an external system.
+
+On failure a callback fires: a line in `airflow/alerts.log` and in the task log.
+In production this is where email or a messenger goes, but the interface is the
+same — a callback function, and only it would change. Requiring SMTP in a
+project that promises to start with one command would mean demanding setup
+exactly where none was promised.
+
+It takes a minute to check: `make run DATE=2025-02-26` — no order partition ever
+arrived for that date. Freshness fails, the build never starts, the marts do not
+move, a line appears in `alerts.log`, and the command exits non-zero.
+
 ## How it is put together
 
 One Postgres container holding two databases: `warehouse` for the raw layer and
-the marts, `airflow_meta` for scheduler metadata. Airflow itself will be
-installed into a local venv at stage 4 rather than containerised — reading logs
-and debugging is markedly easier that way, and debugging is precisely what this
-project is meant to show.
+the marts, `airflow_meta` for scheduler metadata. Airflow itself sits in a local
+venv rather than a container — reading logs and debugging is markedly easier
+that way, and debugging is precisely what this project is meant to show. It is
+installed against the official constraints file: it carries around two hundred
+transitive dependencies, and without pins the resolver assembles a combination
+nobody has ever tested.
+
+Airflow's own config is not committed: it is generated, it runs to over a
+hundred kilobytes of somebody else's defaults, and those cannot be explained.
+Everything this project needs is five environment variables in the Makefile.
 
 The official Airflow compose file is deliberately not used. It carries eight
 services and over two hundred lines; they cannot be explained in a minute, and
 being explainable is a requirement here.
 
-There are three virtual environments, one per tool: the generator, dbt and the
-reconciliation. Their versions are not obliged to agree, and a fourth will join
-them at stage 4 for Airflow. What ties them together is an exit code rather
-than a shared set of packages: the DAG calls dbt as a subprocess instead of
-importing it.
+There are four virtual environments, one per tool: the generator, dbt, the
+reconciliation and Airflow. Their versions are not obliged to agree, and that is
+not theory — Airflow pins around two hundred packages, and any attempt to fold
+it together with dbt ends in a night with the resolver. What ties them together
+is an exit code rather than a shared set of packages: the DAG calls the tools as
+subprocesses instead of importing them.
 
 ## Three questions this file has to answer
 
@@ -251,7 +344,7 @@ reduced to three headings full of generalities.
 | 1. Data | Synthetic generator, `raw` schema, planted defects | `make seed` twice leaves the same state ✅ |
 | 2. dbt layers | staging, intermediate, sales and conversion marts | `dbt run` builds the marts ✅ |
 | 3. Test gates | Invariants that stop, checks that flag | Broken data is not published ✅ |
-| 4. Airflow | DAG, idempotency, reprocessing window, backfill | Reprocessing a past day is one command |
+| 4. Airflow | DAG, idempotency, reprocessing window, backfill | Reprocessing a past day is one command ✅ |
 | 5. Revisions | Revision log and three debugging scenarios | Every scenario reproduces from scratch |
 | 6. Documentation | Dictionary, lineage, the query-plan chapter | All six completion criteria are met |
 
