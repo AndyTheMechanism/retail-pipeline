@@ -1,8 +1,17 @@
 version: 2
 
-# Тестов нет и здесь - этап 3. Витрины отдают ингредиенты, а суждение о том,
-# что считать сломанным, выносит гейт. Флага "чеки больше трафика на 0,95" в
-# витрине конверсии поэтому тоже нет.
+# Тесты на витринах устроены иначе, чем выше по графу, и это надо знать.
+#
+# Тест в dbt выполняется после того, как его модель собрана. Значит тест на
+# витрине падает, когда неверная витрина уже лежит в базе, - остановить ее
+# появление он не может по устройству инструмента. Поэтому все, что обязано не
+# пустить битое число в витрину, стоит выше: сверка с сырьем и ссылочная
+# целостность сидят на промежуточном слое, и упавший там тест просто не дает
+# витринам собраться.
+#
+# Здесь остаются проверки формы - зерно и ключи. Они дешевые, и их падение
+# означает не "витрину нельзя публиковать", а "витрина сломана, разбираться
+# надо сейчас".
 
 models:
   - name: mart_store_daily_sales
@@ -10,11 +19,20 @@ models:
       Продажи по магазину и дню. Зерно - (store_id, order_date), 62 690 строк
       по спайну. Возврат отнесен к дате заказа, поэтому вчерашнее число может
       измениться - в этом и предмет проекта.
+    data_tests:
+      - unique_grain:
+          arguments:
+            columns: [store_id, order_date]
     columns:
+      - name: store_id
+        data_tests: [not_null]
+      - name: order_date
+        data_tests: [not_null]
       - name: has_orders
         description: >
           Приехали ли заказы за этот день. Для открытого магазина это норма;
           ложь по всей сети в один день означает непришедшую партицию.
+        data_tests: [not_null]
       - name: orders_count
         description: Заказы без отмененных, по шапкам, а не по позициям.
       - name: orders_cancelled_count
@@ -28,11 +46,12 @@ models:
       - name: returns_amount
         description: >
           Возвраты, отнесенные к дате заказа. Именно они двигают вчерашнее
-          число, и ради них существует окно пересчета этапа 4.
+          число, и ради них существует окно пересчета.
       - name: returns_arrived_amount
         description: >
           Возвраты, приехавшие в этот день к заказам любых дат. В выручке не
           участвует; нужна, чтобы было видно, откуда взялось изменение прошлого.
+        data_tests: [not_null, not_negative]
       - name: revenue_net
         description: Выручка за вычетом возвратов, отнесенных к дате заказа.
 
@@ -40,27 +59,85 @@ models:
     description: >
       Конверсия по магазину и дню. Зерно - (store_id, traffic_date), те же
       62 690 строк.
+    data_tests:
+      - unique_grain:
+          arguments:
+            columns: [store_id, traffic_date]
     columns:
+      - name: store_id
+        data_tests: [not_null]
+      - name: traffic_date
+        data_tests: [not_null]
+      - name: has_traffic
+        data_tests: [not_null]
       - name: visitors
         description: Посетители по дверному счетчику. Null, если трафик за день не приехал.
+        data_tests: [not_negative]
       - name: orders_offline
         description: >
           Чеки: офлайн-заказы без отмененных. Сайт и приложение не входят -
           дверной счетчик их не видит.
+        data_tests: [not_negative]
       - name: conversion
         description: >
           Чеки на посетителя. Null, если нет трафика, нет заказов или
           посетителей ноль: ноль посетителей при живых чеках - это сообщение о
-          сломанном приборе, а не значение.
+          сломанном приборе, а не значение. Порог качества здесь не
+          применяется - его выносит флаг.
 
   - name: mart_store_daily_sales_trend
     description: >
       Недельный фон выручки поверх витрины продаж. Отдельная модель, потому что
       скользящее окно перетягивает соседние строки, а на этапе 4 витрина станет
       инкрементальной.
+    data_tests:
+      - unique_grain:
+          arguments:
+            columns: [store_id, order_date]
     columns:
+      - name: store_id
+        data_tests: [not_null]
+      - name: order_date
+        data_tests: [not_null]
       - name: revenue_net_avg_7d
         description: >
           Скользящее среднее чистой выручки за 7 дней. Пусто, если в окне есть
           день без данных: avg пропустил бы null и поделил на меньшее число
           дней, то есть подменил бы пропуск оценкой.
+
+  - name: mart_store_daily_quality
+    description: >
+      Флаги качества: что в этот день у этого магазина считать нельзя. Зерно -
+      (store_id, flag_date, check_name). Отдельная таблица, а не колонки в
+      витринах: флагов бывает несколько на строку, они добавляются со временем,
+      и строкой это растет естественно, а колонкой - нет.
+    data_tests:
+      - unique_grain:
+          arguments:
+            columns: [store_id, flag_date, check_name]
+    columns:
+      - name: store_id
+        data_tests: [not_null]
+      - name: flag_date
+        data_tests: [not_null]
+      - name: check_name
+        description: >
+          Имя проверки. Английское, потому что по нему фильтруют и джойнят.
+          Список закрытый: новый флаг добавляется осознанно, вместе с правкой
+          этого теста, а не приезжает опечаткой.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values:
+                  - conversion_above_threshold
+                  - return_outside_window
+                  - orders_partition_missing
+                  - traffic_partition_missing
+      - name: reason
+        description: Причина по-русски - ее читает человек в отчете, а не машина.
+        data_tests: [not_null]
+      - name: measured_value
+        description: Число, из-за которого флаг сработал.
+      - name: threshold_value
+        description: Порог, с которым сравнивали. Пусто там, где сравнения не было.
