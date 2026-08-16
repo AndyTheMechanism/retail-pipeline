@@ -51,6 +51,17 @@ from marts.mart_store_daily_sales
 where order_date between %s and %s
 """
 
+# Размер окна не задан здесь константой намеренно. Он живет в переменных
+# dbt/dbt_project.yml, а сюда попадает через данные: в таблице качества лежит
+# тот порог, с которым флаг "возврат вне окна" реально сравнивал. Второе
+# определение числа рядом с первым разъехалось бы с ним при первой же правке -
+# именно это и случилось однажды с константой в DAG.
+WINDOW_DAYS = """
+select distinct threshold_value::int
+from marts.mart_store_daily_quality
+where check_name = 'return_outside_window'
+"""
+
 
 def main(argv: list[str]) -> int:
     if len(argv) != 2:
@@ -58,14 +69,18 @@ def main(argv: list[str]) -> int:
         return 1
 
     run_date = date.fromisoformat(argv[1])
-    window_days = 28
 
     with connect() as conn:
         row = conn.execute(SUMMARY, (run_date,)).fetchone()
         flags = conn.execute(FLAGS, (run_date,)).fetchall()
-        window = conn.execute(
-            WINDOW, (run_date - timedelta(days=window_days), run_date)
-        ).fetchone()
+
+        measured = conn.execute(WINDOW_DAYS).fetchall()
+        window_days = int(measured[0][0]) if len(measured) == 1 else None
+        window = (
+            conn.execute(WINDOW, (run_date - timedelta(days=window_days), run_date)).fetchone()
+            if window_days is not None
+            else None
+        )
 
     strok, s_zakazami, zakazov, brutto, vozvraty, netto, priehali = row
 
@@ -79,8 +94,13 @@ def main(argv: list[str]) -> int:
     print()
     print("  возвраты, приехавшие в этот день к заказам прошлых дат: %s"
           % f"{priehali:,.2f}".replace(",", " "))
-    print("  окно пересчета %d дней: строк %d, нетто %s"
-          % (window_days, window[0], f"{window[1]:,.2f}".replace(",", " ")))
+    if window is not None:
+        print("  окно пересчета %d дней: строк %d, нетто %s"
+              % (window_days, window[0], f"{window[1]:,.2f}".replace(",", " ")))
+    else:
+        # Флаг "возврат вне окна" ни разу не сработал, и размер окна из данных
+        # не восстановить. Это не ошибка публикации, а отсутствие наблюдений.
+        print("  окно пересчета: за него ничего не выпадало, размер по данным не виден")
 
     if flags:
         print()

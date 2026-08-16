@@ -17,24 +17,75 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from generator.load import connect  # noqa: E402  - после правки sys.path
+from generator import defects as defect_map  # noqa: E402  - после правки sys.path
+from generator.config import Config  # noqa: E402
+from generator.load import connect  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# Даты сценариев. Взяты не с потолка: 26 июня - последняя неделя горизонта,
-# поэтому удаленные возвраты восстанавливаются самим же проигрыванием и
-# отдельного шага восстановления не нужно. 25 июня пропущено намеренно: за этот
-# день не приехал трафик, и прогон встал бы на свежести - это другой сценарий.
-LATE_RETURN_START = date(2026, 6, 26)
-LATE_RETURN_END = date(2026, 6, 30)
+# Даты сценариев вычисляются из карты дефектов, а не записаны числами.
+#
+# Хардкод здесь был бы тем самым тихим враньем, против которого построен весь
+# проект: смени сид или горизонт - и сценарий начнет показывать не то, что
+# обещает, ничем этого не выдав. Генератор знает, где лежат дефекты, - у него и
+# спрашиваем.
+CONFIG = Config()
 
-# Дата, за которую генератор не отдает заказов. Дефект заложен на этапе 1.
-MISSING_PARTITION_DATE = date(2025, 2, 26)
-HEALTHY_DATE = date(2025, 2, 27)
 
-# День внутри окна битого счетчика: магазин 74 в это время показывает ноль
-# посетителей при живых чеках, магазин 17 занижает.
-BROKEN_COUNTER_DATE = date(2026, 4, 15)
+def _broken_days() -> set[date]:
+    """Дни, за которые источник не отдал чего-нибудь целиком.
+
+    Прогон за такой день встает на свежести, поэтому сценарии, которым нужен
+    здоровый день, обходят их стороной.
+    """
+    out: set[date] = set()
+    for days in defect_map.missing_partitions(CONFIG).values():
+        out |= set(days)
+    return out
+
+
+def _clean_tail(count: int) -> list[date]:
+    """Последние подряд идущие здоровые дни горизонта.
+
+    Хвост берется именно с конца намеренно: возвраты, которые сценарий уберет,
+    возвращает само проигрывание, и отдельный шаг восстановления не нужен.
+    """
+    bad = _broken_days()
+    days: list[date] = []
+    day = CONFIG.end_date
+    while len(days) < count and day >= CONFIG.start_date:
+        days = [day] + days if day not in bad else []
+        day -= timedelta(days=1)
+    if len(days) < count:
+        raise SystemExit("В горизонте нет %d здоровых дней подряд" % count)
+    return days
+
+
+def _counter_day() -> date:
+    """Здоровый день внутри окна битого счетчика."""
+    bad = _broken_days()
+    for window in defect_map.broken_counter_windows(CONFIG):
+        day = window.start + (window.end - window.start) // 2
+        if day not in bad:
+            return day
+    raise SystemExit("В данных нет окна битого счетчика")
+
+
+_TAIL = _clean_tail(5)
+LATE_RETURN_START, LATE_RETURN_END = _TAIL[0], _TAIL[-1]
+
+MISSING_PARTITION_DATE = sorted(defect_map.missing_partitions(CONFIG)["orders"])[0]
+HEALTHY_DATE = next(
+    d for d in (MISSING_PARTITION_DATE + timedelta(days=i) for i in range(1, 15))
+    if d not in _broken_days()
+)
+
+BROKEN_COUNTER_DATE = _counter_day()
+
+# Сценарий обязан уметь провалиться. Показ, который всегда зеленый, ничего не
+# доказывает - это ровно та претензия, которую проект предъявляет чужим
+# проверкам в INCIDENTS.md, и она не перестает быть верной для своих.
+FAILURES: list[str] = []
 
 
 def banner(text: str) -> None:
@@ -66,7 +117,10 @@ def run_pipeline(day: date, expect_failure: bool = False) -> bool:
             print("    тест вернул строки, значит цепочка встает")
     print("    код возврата: %d%s" % (result.returncode, " (ожидаемо)" if expect_failure else ""))
     if ok == expect_failure:
-        print("    НЕОЖИДАННО: ожидалось %s" % ("падение" if expect_failure else "успех"))
+        note = "прогон за %s: ожидалось %s, получилось обратное" % (
+            day, "падение" if expect_failure else "успех")
+        print("    НЕОЖИДАННО: %s" % note)
+        FAILURES.append(note)
     return ok
 
 
@@ -150,6 +204,34 @@ def late_return() -> int:
     for reason, count, delta in reasons:
         print("  %-26s %8d  %s" % (reason, count, money(delta)))
 
+    # Разложение по знаку - не украшение отчета, а защита от неверного вывода.
+    # Итоговую дельту тянет сравнить с суммой убранных возвратов, и она не
+    # сойдется: это разные величины, и почему - написано ниже.
+    split = sql(
+        """
+        select
+            count(*) filter (where revenue_net_delta < 0),
+            coalesce(sum(revenue_net_delta) filter (where revenue_net_delta < 0), 0),
+            count(*) filter (where revenue_net_delta > 0),
+            coalesce(sum(revenue_net_delta) filter (where revenue_net_delta > 0), 0)
+        from marts.mart_store_daily_revisions
+        """
+    )[0]
+    print("\n  из них вниз: %d строк на %s" % (split[0], money(split[1])))
+    print("      и вверх: %d строк на %s" % (split[2], money(split[3])))
+    print("""
+Ревизии вверх выглядят странно и объясняются устройством показа. Первый снимок
+снимается со всей витрины, а прогон за первый день пересобирает только окно
+назад - значит дни ПОСЛЕ него остались в снимке с прежними значениями, где
+удаленные возвраты еще учтены. Когда очередь доходит до такого дня, он
+пересобирается "по состоянию на тогда", выручка поднимается, а следующими
+прогонами снова опускается по мере приезда возвратов.
+
+Отсюда прямое следствие, которое стоит помнить: суммарную дельту журнала нельзя
+сравнивать с суммой убранных возвратов - это разные величины. Убрано %s
+брутто; журнал показывает движение опубликованных чисел относительно базы,
+которая сама не была одним моментом времени.""" % money(removed[1]))
+
     rows = sql(
         """
         select store_id, order_date, revised_at, revenue_net_was, revenue_net_became,
@@ -219,9 +301,10 @@ def missing_partition() -> int:
     """Источник за день не приехал: цепочка встала, витрина не тронута."""
     banner("Сценарий: пропущенная партиция")
     print("""
-За %s источник не отдал ни одной строки заказов. Дефект заложен генератором на
-этапе 1, до всякого пайплайна, и воспроизводится по сиду - подстраивать ничего
-не нужно.""" % MISSING_PARTITION_DATE)
+За %s источник не отдал ни одной строки заказов. Дефект заложен генератором в
+сыром слое, до всякого пайплайна, и воспроизводится по сиду - подстраивать
+ничего не нужно, дата даже не записана здесь числом, а взята из карты
+дефектов.""" % MISSING_PARTITION_DATE)
 
     step("Контрольная сумма витрины до прогона")
     before = mart_digest()
@@ -236,7 +319,11 @@ def missing_partition() -> int:
     step("Что стало с витриной")
     after = mart_digest()
     print("  %s" % after)
-    print("  витрина %s" % ("НЕ ИЗМЕНИЛАСЬ" if before == after else "изменилась - это ошибка"))
+    if before == after:
+        print("  витрина НЕ ИЗМЕНИЛАСЬ")
+    else:
+        print("  витрина изменилась - а не должна была")
+        FAILURES.append("витрина изменилась при упавшей свежести")
 
     step("Алерт")
     if alerts.exists():
@@ -348,7 +435,21 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="scenarios", description="Сценарии отладки пайплайна")
     parser.add_argument("scenario", choices=sorted(SCENARIOS))
     args = parser.parse_args(argv)
-    return SCENARIOS[args.scenario]()
+    SCENARIOS[args.scenario]()
+
+    # Код возврата - не формальность. Показ, который не умеет провалиться,
+    # ничего не доказывает, а зеленый по умолчанию хуже красного: он создает
+    # уверенность там, где проверки не было.
+    if FAILURES:
+        print()
+        print("Сценарий не сошелся, расхождений %d:" % len(FAILURES))
+        for note in FAILURES:
+            print("  -", note)
+        return 1
+
+    print()
+    print("Сценарий прошел как задумано.")
+    return 0
 
 
 if __name__ == "__main__":
