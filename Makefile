@@ -28,6 +28,11 @@ DBT_DIR  := dbt
 # В окружение уходит через голый export ниже.
 DBT_PROFILES_DIR := $(CURDIR)/$(DBT_DIR)
 
+# Окружение сверки. Третье, и по той же причине, что второе: pandas не нужен
+# ни генератору, ни моделям.
+CHECKS_VENV := .venv-checks
+CHECKS_PY   := $(CHECKS_VENV)/bin/python
+
 # Если рядом лежит .env - подхватить и передать генератору. Файл
 # необязательный: значения по умолчанию совпадают с docker-compose.yml, и на
 # чистом клоне все работает без него.
@@ -35,7 +40,7 @@ DBT_PROFILES_DIR := $(CURDIR)/$(DBT_DIR)
 export
 
 .DEFAULT_GOAL := help
-.PHONY: help up down reset psql venv venv-dbt seed seed-day defects verify measure-returns models dbt run test backfill
+.PHONY: help up down reset psql venv venv-dbt seed seed-day defects verify measure-returns models dbt reconcile run test backfill
 
 help: ## Показать список целей
 	@echo 'Пайплайн розничной воронки. Движок: $(ENGINE)'
@@ -110,6 +115,12 @@ $(DBT_VENV): requirements-dbt.txt
 
 venv-dbt: $(DBT_VENV) ## Собрать виртуальное окружение dbt
 
+$(CHECKS_VENV): requirements-checks.txt
+	$(PYTHON) -m venv $(CHECKS_VENV)
+	$(CHECKS_VENV)/bin/pip -q install --upgrade pip
+	$(CHECKS_VENV)/bin/pip -q install -r requirements-checks.txt
+	@touch $(CHECKS_VENV)
+
 # Пустое сырье - самая тихая ошибка на этом этапе: dbt честно соберет витрины
 # из ничего и отчитается об успехе. Проверка стоит одной команды, а разбор
 # "почему в витрине ноль строк" - вечера.
@@ -126,6 +137,11 @@ models: up $(DBT_VENV) ## Собрать витрины: dbt run по всем �
 dbt: up $(DBT_VENV) ## Позвать dbt напрямую, например make dbt ARGS=debug
 	@test -n "$(ARGS)" || { echo 'Нужны аргументы, например: make dbt ARGS=debug'; exit 1; }
 	$(DBT) $(ARGS) --project-dir $(DBT_DIR)
+
+# Сверка нарочно написана не на SQL и живет снаружи пайплайна: проверка тем же
+# инструментом повторила бы ошибку модели и не заметила ее.
+reconcile: up $(CHECKS_VENV) ## Сверить витрины с сырым слоем
+	$(CHECKS_PY) checks/reconcile.py
 
 # seed сам поднимает базу и собирает окружение. Иначе "воспроизводится одной
 # командой" превратилось бы в три команды с примечанием.
