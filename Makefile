@@ -4,12 +4,21 @@
 # скорее всего docker. Compose-файл для обоих один и тот же, разница только в
 # том, какую команду звать.
 
+# .env подключается ПЕРВЫМ, до единого присваивания, и это не стиль, а
+# исправленная ошибка. Раньше он стоял внизу файла, а переменные выше
+# раскрывались через := - то есть значения из .env до них не доходили. Выглядело
+# это так: занятый порт переопределяли в .env, база послушно поднималась на
+# новом порту, генератор и dbt тоже, а строка подключения Airflow оставалась на
+# 5432 и молча уезжала в чужой Postgres. Ровно тот тихий разъезд, от которого
+# предостерегает сам .env.example.
+-include .env
+
 ENGINE  := $(shell if command -v docker >/dev/null 2>&1; then echo docker; else echo podman; fi)
 COMPOSE := $(shell if command -v docker >/dev/null 2>&1; then echo "docker compose"; else echo "podman-compose"; fi)
 
 DB_CONTAINER := retail-pipeline-db
-DB_USER      := pipeline
 DB_NAME      := warehouse
+DB_USER      := $(or $(POSTGRES_USER),pipeline)
 DB_PASSWORD  := $(or $(POSTGRES_PASSWORD),pipeline)
 DB_PORT      := $(or $(POSTGRES_PORT),5432)
 
@@ -63,20 +72,30 @@ AIRFLOW__CORE__DAGS_FOLDER := $(CURDIR)/airflow/dags
 AIRFLOW__CORE__LOAD_EXAMPLES := False
 AIRFLOW__CORE__EXECUTOR := LocalExecutor
 
-# Если рядом лежит .env - подхватить и передать генератору. Файл
-# необязательный: значения по умолчанию совпадают с docker-compose.yml, и на
-# чистом клоне все работает без него.
--include .env
+# Голый export отдает все переменные выше дочерним процессам: генератору, dbt и
+# Airflow. Файл .env при этом необязателен - умолчания совпадают с
+# docker-compose.yml, и на чистом клоне все работает без него.
 export
 
 .DEFAULT_GOAL := help
-.PHONY: help up down reset psql venv venv-dbt venv-airflow airflow-init airflow seed seed-day defects verify measure-returns models dbt reconcile revisions run test backfill scenario-late-return scenario-missing-partition scenario-broken-counter
+.PHONY: help demo up down reset psql venv venv-dbt venv-airflow airflow-init airflow seed seed-day defects verify measure-returns models dbt docs dictionary reconcile revisions run test backfill scenario-late-return scenario-missing-partition scenario-broken-counter
 
 help: ## Показать список целей
 	@echo 'Пайплайн розничной воронки. Движок: $(ENGINE)'
 	@echo
 	@grep -E '^[a-z][a-z-]*:.*?## ' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  %-10s %s\n", $$1, $$2}'
+
+# Одна команда для того, кто открыл репозиторий впервые: данные, витрины с
+# гейтом и сверка их с сырьем. Существует потому, что "воспроизводится с нуля
+# одной командой" - это критерий готовности проекта, а без этой цели команд
+# было бы две, и обещание оказалось бы неточным.
+demo: seed models reconcile ## Все с нуля: данные, витрины с гейтом, сверка
+	@echo
+	@echo 'Готово. Дальше:'
+	@echo '  make run DATE=2026-03-14   прогнать пайплайн за дату'
+	@echo '  make revisions             что менялось и почему'
+	@echo '  make scenario-late-return  вчерашнее число изменилось на глазах'
 
 # -h 127.0.0.1 в проверке готовности не для красоты. Пока идут скрипты
 # инициализации, Postgres слушает только unix-сокет: проверка через сокет
@@ -86,6 +105,16 @@ up: ## Поднять Postgres и дождаться готовности
 	@command -v $(ENGINE) >/dev/null 2>&1 || { \
 		echo 'Не найден движок контейнеров: нужен docker или podman.'; \
 		echo 'На Windows запускать под WSL2 - нативной поддержки Makefile там нет.'; \
+		exit 1; }
+	@# Движок сам по себе не значит, что есть compose. Комбинация "podman без
+	@# podman-compose" встречается часто, а на Fedora с пакетом podman-docker
+	@# команда docker есть, но подкоманды compose у нее нет - и тогда сообщение
+	@# об ошибке будет про несуществующую команду, а не про то, что ставить.
+	@$(COMPOSE) version >/dev/null 2>&1 || { \
+		echo 'Движок $(ENGINE) есть, а compose к нему - нет.'; \
+		echo '  Fedora, podman:       sudo dnf install -y podman-compose'; \
+		echo '  Debian, Ubuntu, WSL:  sudo apt install -y podman-compose'; \
+		echo '  docker:               подключить плагин docker-compose-plugin'; \
 		exit 1; }
 	$(COMPOSE) up -d
 	@printf 'Жду готовности базы'
@@ -196,6 +225,11 @@ dbt: up $(DBT_VENV) ## Позвать dbt напрямую, например mak
 # Сверка нарочно написана не на SQL и живет снаружи пайплайна: проверка тем же
 # инструментом повторила бы ошибку модели и не заметила ее.
 reconcile: up $(CHECKS_VENV) ## Сверить витрины с сырым слоем
+	@rows=$$($(ENGINE) exec $(DB_CONTAINER) psql -h 127.0.0.1 -U $(DB_USER) -d $(DB_NAME) \
+		-tAc 'select count(*) from marts.mart_store_daily_sales' 2>/dev/null || echo 0); \
+	test "$$rows" -gt 0 2>/dev/null || { \
+		echo 'Витрин нет - сверять не с чем. Сначала make models.'; \
+		exit 1; }
 	$(CHECKS_PY) checks/reconcile.py
 
 # seed сам поднимает базу и собирает окружение. Иначе "воспроизводится одной
@@ -213,7 +247,7 @@ defects: $(VENV) ## Показать карту заложенных дефек�
 verify: up $(VENV) ## Контрольные суммы таблиц - чем проверяется повторяемость
 	$(PY) -m generator verify
 
-measure-returns: up $(VENV) ## Распределение задержки возвратов, вход для этапа 4
+measure-returns: up $(VENV) ## Распределение задержки возвратов - им обосновано окно пересчета
 	$(PY) -m generator measure-returns
 
 # Цели ниже объявлены с первого дня намеренно: они задают форму проекта и не
@@ -237,6 +271,20 @@ run: up $(VENV) $(DBT_VENV) $(AIRFLOW_DB_STAMP) ## Прогнать пайпла
 	@test -n "$(DATE)" || { echo 'Нужна дата: make run DATE=2026-03-14'; exit 1; }
 	$(AIRFLOW) dags test $(AIRFLOW_DAG) $(DATE)
 
+# Линейдж рисуется, а не поддерживается руками: картинка, нарисованная в
+# редакторе, разъедется с кодом в первую же неделю.
+docs: up $(DBT_VENV) ## Линейдж и документация dbt в браузере
+	$(DBT) docs generate --project-dir $(DBT_DIR)
+	$(DBT) docs serve --project-dir $(DBT_DIR)
+
+# Словарь тоже собирается, а не пишется. Руками пишутся описания колонок - в тех
+# же yml, где стоят их проверки. Сборка падает, если хоть одна колонка осталась
+# без описания: словарь с дырами хуже отсутствующего, по нему принимают решения,
+# считая, что он полон.
+dictionary: up $(DBT_VENV) $(VENV) ## Пересобрать DICTIONARY.md из описаний в yml
+	$(DBT) docs generate --project-dir $(DBT_DIR)
+	$(PY) docs/build_dictionary.py
+
 revisions: up ## Показать журнал ревизий: что изменилось, когда и почему
 	@$(ENGINE) exec $(DB_CONTAINER) psql -h 127.0.0.1 -U $(DB_USER) -d $(DB_NAME) -P pager=off -c \
 		"select store_id, order_date, revised_at, revenue_net_was, revenue_net_became, \
@@ -246,13 +294,13 @@ revisions: up ## Показать журнал ревизий: что измен
 
 # Сценарии зовут те же команды, что позвал бы человек, а не лезут в базу в обход
 # пайплайна: иначе показ доказывал бы работу показа.
-scenario-late-return: up $(VENV) $(DBT_VENV) $(AIRFLOW_DB_STAMP) ## Сценарий: вчерашнее число изменилось, и видно почему
+scenario-late-return: up models $(AIRFLOW_DB_STAMP) ## Сценарий: вчерашнее число изменилось, и видно почему
 	$(PY) -m scenarios late-return
 
-scenario-missing-partition: up $(VENV) $(DBT_VENV) $(AIRFLOW_DB_STAMP) ## Сценарий: источник не приехал, цепочка встала
+scenario-missing-partition: up models $(AIRFLOW_DB_STAMP) ## Сценарий: источник не приехал, цепочка встала
 	$(PY) -m scenarios missing-partition
 
-scenario-broken-counter: up $(VENV) $(DBT_VENV) $(AIRFLOW_DB_STAMP) ## Сценарий: прибор врет, сеть считается дальше
+scenario-broken-counter: up models $(AIRFLOW_DB_STAMP) ## Сценарий: прибор врет, сеть считается дальше
 	$(PY) -m scenarios broken-counter
 
 # Даты считает python, а не date -d: GNU-шный синтаксис сдвига даты есть не
