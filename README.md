@@ -9,16 +9,18 @@ silently.**
 Stack: PostgreSQL, dbt, Airflow, Python. The data is synthetic; the generator
 lives in this repository and is deterministic under a seed.
 
-> **Status: stage 2 of 6.** The database, the raw layer and the sales and
-> conversion marts are in place. Tests and orchestration are not: the marts are
-> built in full and without checks. What is missing is listed below and printed
-> by `make`.
+> **Status: stage 3 of 6.** The database, the raw layer, the marts and the test
+> gates are in place: broken data does not reach the marts, and a flagged store
+> does not take the chain down. Orchestration is not there yet — the marts are
+> built in full, on demand. What is missing is listed below and printed by
+> `make`.
 
 ## Run it
 
 ```bash
 make seed       # start the database, build the environment, generate the data
-make models     # build the marts
+make models     # build the marts behind the gate: failed checks, no rebuild
+make test       # run the checks alone against models already built
 make reconcile  # reconcile the marts against the raw layer
 make psql       # open a shell on the database
 make down       # stop; the data survives
@@ -72,8 +74,9 @@ returns, a missing partition, duplicated export rows, a broken traffic counter,
 and outliers. A defect fitted to a test only proves that the test can catch
 itself.
 
-`make defects` prints where they are. The checks that catch them arrive at
-stage 3.
+`make defects` prints where they are. What the checks do with them is in the
+stop-and-flag section: some break the chain, some mark the store and let the
+rest of the chain through.
 
 ### Loading is delete-and-insert by date, and nothing else
 
@@ -107,8 +110,8 @@ means "we counted, and it came to zero"; a null means "there was nothing to
 count".
 
 The marts are built in full: incrementality and the reprocessing window belong
-to stage 4. There is not a single test — that is stage 3, and their absence
-here is deliberate.
+to stage 4. The checks are already in place and have a section of their own
+below.
 
 ### The two decisions people ask about first
 
@@ -125,6 +128,72 @@ diverged. A window function over `(order_id, line_no)` states the grain, and
 counts how many source rows there were for that line while it is at it. The
 ordering inside the window is explicit: without it the order is undefined, two
 runs would produce different numbers, and reproducibility would break silently.
+
+## Stop and flag
+
+Not all defects are equal, and a pipeline that falls over at every one of them
+is as useless as a pipeline that never falls over. The line is drawn not by how
+bad the problem is, but by a single question: **can reprocessing fix it?**
+
+A doubled grain can be fixed — so nothing may be counted on it and the chain
+stops. A broken door counter at one store cannot be fixed by anything, and
+stopping the whole chain over it means having no numbers for every store
+instead of one.
+
+| Check | What it does |
+|---|---|
+| Grain uniqueness, not-null on keys | Stop |
+| Referential integrity of returns and order lines | Stop |
+| Source freshness for the target run date | Stop |
+| Order lines reconciled against the raw layer for a period | Stop |
+| Cancellations agreeing with order status | Stop |
+| Conversion above the "checks > traffic × 0.95" threshold | Flag |
+| A return arriving outside the reprocessing window | Flag |
+| A missing partition left behind in history | Flag |
+
+Stops are ordinary dbt tests. Flags are rows in
+`marts.mart_store_daily_quality`: store, day, check name, reason in Russian. A
+table of its own rather than columns on the marts, because a single row can
+carry several flags and there will be more of them over time: as rows that
+grows naturally, as columns it does not. On top of that, one test with `warn`
+severity prints their summary on every run — otherwise flags would be data that
+someone has to remember to look at.
+
+Freshness is measured against the **target run date**, not against the wall
+clock: the data horizon is fixed and ends in the past, so a "fresh as of today"
+check would be red always and rightly so — and a disabled gate is worse than an
+absent one. The date can be set by hand:
+`make test VARS='{run_date: 2025-02-26}'`.
+
+### What "not published" actually is
+
+`make models` calls `dbt build`, not `dbt run`: tests are interleaved with
+models along the graph, and a failing test on a lower layer simply does not let
+the marts be built. The previous mart stays where it was, untouched —
+yesterday's number is not rewritten, rather than rewritten wrongly.
+
+Hence something worth knowing about the tool itself: a dbt test runs after its
+model has been built, so a test on a mart fails once the wrong mart is already
+in the database. Everything that must keep a bad number out of a mart sits
+higher up the graph — the raw-layer reconciliation and referential integrity
+live on the intermediate layer. What is left on the marts are shape checks.
+
+It takes a minute to verify by hand: slip a duplicate order into the raw layer,
+call `make models`, and watch uniqueness fail, the marts get skipped, and their
+checksums stay exactly as they were. One command puts it back —
+`make seed-day DATE=...`.
+
+### A check bounded by dates
+
+A cancellation arrives a day or two after its order, so orders from the last
+two days of the horizon may not have a cancellation row yet — not because it was
+lost, but because its time has not come. The first version of that test did not
+account for this and failed on 56 orders.
+
+The lesson generalises, and it is an expensive one: a check comparing two
+sources with different delays must be bounded by dates to the depth of that
+delay. Otherwise it is red always, someone switches it off, and there is no
+gate any more.
 
 ### Reconciliation
 
@@ -181,7 +250,7 @@ reduced to three headings full of generalities.
 | 0. Skeleton | Database, Makefile, repository skeleton | `make up` brings the database up ✅ |
 | 1. Data | Synthetic generator, `raw` schema, planted defects | `make seed` twice leaves the same state ✅ |
 | 2. dbt layers | staging, intermediate, sales and conversion marts | `dbt run` builds the marts ✅ |
-| 3. Test gates | Invariants that stop, checks that flag | Broken data is not published |
+| 3. Test gates | Invariants that stop, checks that flag | Broken data is not published ✅ |
 | 4. Airflow | DAG, idempotency, reprocessing window, backfill | Reprocessing a past day is one command |
 | 5. Revisions | Revision log and three debugging scenarios | Every scenario reproduces from scratch |
 | 6. Documentation | Dictionary, lineage, the query-plan chapter | All six completion criteria are met |
