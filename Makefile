@@ -35,7 +35,7 @@ DBT_PROFILES_DIR := $(CURDIR)/$(DBT_DIR)
 export
 
 .DEFAULT_GOAL := help
-.PHONY: help up down reset psql venv venv-dbt seed seed-day defects verify measure-returns dbt run test backfill
+.PHONY: help up down reset psql venv venv-dbt seed seed-day defects verify measure-returns models dbt run test backfill
 
 help: ## Показать список целей
 	@echo 'Пайплайн розничной воронки. Движок: $(ENGINE)'
@@ -110,6 +110,17 @@ $(DBT_VENV): requirements-dbt.txt
 
 venv-dbt: $(DBT_VENV) ## Собрать виртуальное окружение dbt
 
+# Пустое сырье - самая тихая ошибка на этом этапе: dbt честно соберет витрины
+# из ничего и отчитается об успехе. Проверка стоит одной команды, а разбор
+# "почему в витрине ноль строк" - вечера.
+models: up $(DBT_VENV) ## Собрать витрины: dbt run по всем моделям
+	@rows=$$($(ENGINE) exec $(DB_CONTAINER) psql -h 127.0.0.1 -U $(DB_USER) -d $(DB_NAME) \
+		-tAc 'select count(*) from raw.orders' 2>/dev/null || echo 0); \
+	test "$$rows" -gt 0 2>/dev/null || { \
+		echo 'В сыром слое пусто - собирать нечего. Сначала make seed.'; \
+		exit 1; }
+	$(DBT) run --project-dir $(DBT_DIR)
+
 # .PHONY у этой цели не для порядка: рядом лежит каталог dbt/, и без нее make
 # посмотрит на каталог, решит, что цель свежая, и молча ничего не сделает.
 dbt: up $(DBT_VENV) ## Позвать dbt напрямую, например make dbt ARGS=debug
@@ -138,8 +149,9 @@ measure-returns: up $(VENV) ## Распределение задержки во�
 # дают ей поплыть. Пока этап не сделан - цель честно падает, а не делает вид,
 # что отработала.
 
-run: ## Прогнать пайплайн за дату (этапы 2-4)
-	@echo 'Этапы 2-4 не сделаны: моделей dbt и DAG еще нет.'
+run: ## Прогнать пайплайн за дату (этапы 3-4)
+	@echo 'Этапы 3-4 не сделаны: тестов-гейтов и DAG еще нет.'
+	@echo 'Витрины уже собираются, но целиком и без проверок: make models.'
 	@echo 'Условие приемки: повторный прогон за ту же дату не задваивает данные.'
 	@exit 1
 
