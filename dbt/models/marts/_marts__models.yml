@@ -141,3 +141,49 @@ models:
         description: Число, из-за которого флаг сработал.
       - name: threshold_value
         description: Порог, с которым сравнивали. Пусто там, где сравнения не было.
+
+  - name: mart_store_daily_revisions
+    description: >
+      Журнал ревизий: какое опубликованное число изменилось, когда и почему.
+      Ядро проекта. Строка появляется только у той пары "магазин и день", чье
+      число действительно поехало; первая версия ревизией не считается.
+      Представление поверх снимка ops.snap_store_daily_sales.
+    data_tests:
+      - unique_grain:
+          arguments:
+            columns: [store_id, order_date, version_no]
+    columns:
+      - name: store_id
+        data_tests: [not_null]
+      - name: order_date
+        description: День, за который изменилось число, а не день пересчета.
+        data_tests: [not_null]
+      - name: revised_at
+        description: Когда пересчет это изменение внес.
+        data_tests: [not_null]
+      - name: version_no
+        description: >
+          Номер версии значения. Всегда больше единицы: первая версия - это не
+          изменение, а первое появление числа.
+        data_tests: [not_null]
+      - name: revenue_net_was
+        description: Что было опубликовано до пересчета.
+      - name: revenue_net_became
+        description: Что опубликовано после.
+      - name: revenue_net_delta
+        description: Насколько сдвинулось. Отрицательное - число уменьшилось.
+      - name: reason
+        description: >
+          Причина не угадывается, а выводится из того, какие величины разошлись.
+          Возвраты изменились при неизменном брутто - поздний возврат, штатная
+          жизнь домена. Изменилось брутто - пересобрано сырье, и это уже повод
+          посмотреть, почему.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values:
+                  - поздний возврат
+                  - пересобрано сырье
+                  - изменился состав заказов
+                  - прочее
