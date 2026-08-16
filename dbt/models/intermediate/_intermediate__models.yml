@@ -1,6 +1,6 @@
 version: 2
 
-# Здесь стоит самый важный стоп всего этапа - сверка собранного чека с сырьем.
+# Здесь стоит самый важный стоп всего проекта - сверка собранного чека с сырьем.
 # Она вынесена отдельным тестом в tests/assert_order_lines_match_raw.sql,
 # потому что идет к источнику напрямую, минуя staging: проверка, построенная на
 # тех же моделях, которые она проверяет, повторила бы их ошибку.
@@ -9,33 +9,49 @@ models:
   - name: int_order_lines
     description: >
       Позиция заказа вместе с шапкой. Зерно - (order_id, line_no).
-      Материализуется таблицей: тяжелый джойн и сортировка дедупликации должны
-      выполниться один раз, а не на каждый запрос к витрине.
+      Инкрементальная: прогон трогает ровно целевую дату, и это решение принято
+      по замеру плана запроса - см. QUERY-PLAN.md.
     data_tests:
       - unique_grain:
           arguments:
             columns: [order_id, line_no]
     columns:
+      - name: order_id
+        description: Заказ, к которому относится позиция.
+      - name: line_no
+        description: Номер позиции внутри заказа. Вместе с order_id образует зерно.
+      - name: order_date
+        description: >
+          Дата из позиции, а не из шапки: в сыром слое это ключ партиции, и он
+          есть даже у осиротевшей строки. Совпадение с датой шапки - инвариант,
+          и проверяется он тестом, а не навязывается джойном. По этой же колонке
+          режется окно пересчета и стоит индекс.
+        data_tests: [not_null]
       - name: store_id
         description: >
           Магазин из шапки заказа. Джойн левый намеренно, чтобы позиция без
           заказа не исчезла до проверки - и вот эта проверка. Null здесь
           означает позицию-сироту, и считать по ней выручку нельзя.
         data_tests: [not_null]
-      - name: order_date
-        description: >
-          Дата из позиции, а не из шапки: в сыром слое это ключ партиции, и он
-          есть даже у осиротевшей строки. Совпадение с датой шапки - инвариант,
-          и проверяется он тестом, а не навязывается джойном.
-        data_tests: [not_null]
+      - name: channel
+        description: Канал заказа из шапки. Витриной продаж не используется, нужен для разборов.
       - name: is_cancelled
         description: Признак отмены из шапки. Отмененные не дают выручки.
         data_tests: [not_null]
+      - name: is_offline
+        description: Признак офлайн-заказа из шапки.
+      - name: sku
+        description: Непрозрачный код позиции. За пределы этой модели не выходит.
       - name: quantity
+        description: Количество. Ноль встречается - заложенный выброс.
         data_tests: [not_null, not_negative]
+      - name: unit_price
+        description: Цена за единицу.
       - name: line_amount
         description: Сумма позиции. Отрицательные значения не отфильтрованы намеренно.
         data_tests: [not_null]
+      - name: source_copies
+        description: Сколько строк на эту позицию было в источнике до дедупликации.
 
   - name: int_returns_attributed
     description: >
@@ -43,11 +59,22 @@ models:
       Модель обязательна, а не декоративна: в сыром слое возвратов нет store_id.
     columns:
       - name: return_id
+        description: Идентификатор возврата.
         data_tests: [unique, not_null]
+      - name: order_id
+        description: Заказ, к которому относится возврат.
+      - name: line_no
+        description: Возвращенная позиция заказа.
       - name: store_id
         description: >
           Магазин из заказа. Null означает возврат-сироту: сумма вычиталась бы
           из выручки неизвестно чего.
+        data_tests: [not_null]
+      - name: is_cancelled
+        description: >
+          Признак отмены исходного заказа. Возврат к отмененному заказу
+          невозможен по смыслу - это проверяет отдельный тест
+          assert_returns_belong_to_live_orders.
         data_tests: [not_null]
       - name: order_date
         description: Дата исходного заказа. К ней возврат относится в витрине продаж.
@@ -56,13 +83,12 @@ models:
         description: Дата приезда возврата. По ней видно, откуда взялось изменение вчерашнего числа.
         data_tests: [not_null]
       - name: delay_days
+        description: Задержка возврата в днях. Вход для размера окна пересчета и для флага.
         data_tests: [not_null, not_negative]
-      - name: is_cancelled
-        description: >
-          Признак отмены исходного заказа. Возврат к отмененному заказу
-          невозможен по смыслу - это проверяет отдельный тест
-          assert_returns_belong_to_live_orders.
-        data_tests: [not_null]
+      - name: quantity
+        description: Возвращенное количество.
+      - name: returned_amount
+        description: Сумма возврата.
 
   - name: int_store_day_spine
     description: >
@@ -74,6 +100,7 @@ models:
             columns: [store_id, calendar_date]
     columns:
       - name: store_id
+        description: Магазин. В решетке присутствуют все 120.
         data_tests: [not_null]
       - name: calendar_date
         description: >

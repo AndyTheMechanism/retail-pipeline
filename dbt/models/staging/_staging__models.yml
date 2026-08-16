@@ -4,14 +4,23 @@ version: 2
 # инварианты: утверждения, которые обязаны быть верны всегда, и если они
 # неверны, считать дальше нельзя. Флаги качества живут не в тестах, а в модели
 # mart_store_daily_quality.
+#
+# Описания колонок здесь не украшение: из них собирается словарь (DICTIONARY.md),
+# и колонка без описания в нем видна дырой.
 
 models:
   - name: stg_stores
     description: Справочник магазинов. Зерно - store_id.
     columns:
       - name: store_id
-        description: Идентификатор магазина.
+        description: Идентификатор магазина. Сквозной по всему проекту.
         data_tests: [unique, not_null]
+      - name: store_code
+        description: Код точки в виде S0001. Витринами не используется, живет для читаемости.
+      - name: city
+        description: Город. Один из тридцати, справочный атрибут.
+      - name: store_format
+        description: Формат точки - малый, средний или большой. Определяет базовый поток заказов.
       - name: opened_on
         description: >
           Дата открытия. До нее у магазина нет ни заказов, ни трафика, и на
@@ -33,11 +42,13 @@ models:
               arguments:
                 to: ref('stg_stores')
                 field: store_id
+      - name: order_ts
+        description: Отметка времени заказа. Витринами не используется - зерно дневное.
       - name: order_date
         description: Дата заказа, ключ партиции в сыром слое.
         data_tests: [not_null]
-      - name: status
-        description: Значение источника, "оформлен" или "отменен".
+      - name: channel
+        description: Значение источника, "офлайн", "сайт" или "приложение".
         data_tests:
           # Новое значение статуса - это не сбой данных, а изменение контракта
           # источника, о котором никто не предупредил. Молча оно превратилось бы
@@ -45,15 +56,19 @@ models:
           # строкой, и все незнакомое стало бы "оформлен".
           - accepted_values:
               arguments:
-                values: ["оформлен", "отменен"]
-      - name: channel
-        description: Значение источника, "офлайн", "сайт" или "приложение".
+                values: ["офлайн", "сайт", "приложение"]
+      - name: status
+        description: Значение источника, "оформлен" или "отменен".
         data_tests:
-          # То же про канал, и цена ошибки тут выше: незнакомый канал не попал
+          # То же про статус, и цена ошибки тут выше: незнакомый канал не попал
           # бы в офлайн, и конверсия по магазину поехала бы вниз без следа.
           - accepted_values:
               arguments:
-                values: ["офлайн", "сайт", "приложение"]
+                values: ["оформлен", "отменен"]
+      - name: customer_id
+        description: >
+          Идентификатор покупателя, заполнен у 70% заказов. Задел под когорты;
+          ни одна текущая витрина его не использует.
       - name: is_cancelled
         description: Признак отмены. Отмененный заказ не дает ни выручки, ни возвратов.
         data_tests: [not_null]
@@ -80,6 +95,10 @@ models:
               arguments:
                 to: ref('stg_orders')
                 field: order_id
+      - name: order_date
+        description: >
+          Дата заказа, денормализованная в позицию как ключ партиции. Входит в
+          partition by оконных функций ради плана запроса - см. QUERY-PLAN.md.
       - name: line_no
         description: Номер позиции внутри заказа. Вместе с order_id образует зерно.
         data_tests: [not_null]
@@ -91,6 +110,8 @@ models:
       - name: quantity
         description: Количество. Ноль встречается - это заложенный выброс.
         data_tests: [not_null, not_negative]
+      - name: unit_price
+        description: Цена за единицу, от 199 до 19990.
       - name: line_amount
         description: >
           Сумма позиции. Может быть отрицательной: выбросы намеренно не
@@ -107,6 +128,7 @@ models:
     description: Возвраты. Зерно - return_id.
     columns:
       - name: return_id
+        description: Идентификатор возврата, выводится из идентификатора заказа.
         data_tests: [unique, not_null]
       - name: order_id
         description: Заказ, к которому относится возврат.
@@ -121,13 +143,19 @@ models:
       - name: order_date
         description: Дата исходного заказа. К ней возврат относится в витрине продаж.
         data_tests: [not_null]
+      - name: line_no
+        description: Позиция заказа, которую вернули.
       - name: returned_date
         description: Дата приезда возврата. По ней нарезана партиция в сыром слое.
         data_tests: [not_null]
+      - name: quantity
+        description: Возвращенное количество, не больше купленного.
+      - name: returned_amount
+        description: Сумма возврата. Именно она вычитается из выручки дня покупки.
       - name: delay_days
         description: >
-          Задержка возврата в днях. Медиана 2, 90-й перцентиль 15, максимум 30.
-          На этом числе стоит размер окна пересчета.
+          Задержка возврата в днях. Медиана 2, 95-й перцентиль 19, 99-й 28,
+          максимум 30. На этом числе стоит размер окна пересчета.
         data_tests:
           # Отрицательная задержка означала бы возврат раньше покупки.
           - not_null
@@ -139,19 +167,23 @@ models:
       Нужна для проверки ссылочной целостности и согласия с orders.status.
     columns:
       - name: cancellation_id
+        description: Идентификатор отмены. Совпадает с идентификатором заказа.
         data_tests: [unique, not_null]
       - name: order_id
+        description: Отмененный заказ.
         data_tests:
           - not_null
           - relationships:
               arguments:
                 to: ref('stg_orders')
                 field: order_id
+      - name: order_date
+        description: Дата исходного заказа.
       - name: cancelled_date
         description: Дата отмены, на 0-2 дня позже даты заказа.
         data_tests: [not_null]
       - name: reason
-        description: Причина отмены из источника.
+        description: Причина отмены из источника - одна из четырех.
         data_tests: [not_null]
 
   - name: stg_store_traffic
@@ -162,6 +194,7 @@ models:
             columns: [store_id, traffic_date]
     columns:
       - name: store_id
+        description: Магазин.
         data_tests:
           - not_null
           - relationships:
@@ -169,6 +202,7 @@ models:
                 to: ref('stg_stores')
                 field: store_id
       - name: traffic_date
+        description: Дата наблюдения трафика.
         data_tests: [not_null]
       - name: visitors
         description: >

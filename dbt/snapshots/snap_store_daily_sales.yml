@@ -28,3 +28,40 @@ snapshots:
       unique_key: [store_id, order_date]
       strategy: check
       check_cols: [orders_count, revenue_gross, returns_amount, revenue_net]
+    columns:
+      - name: store_id
+        description: Магазин. Часть ключа снимка.
+      - name: order_date
+        description: День покупки. Часть ключа снимка.
+      - name: has_orders
+        description: Приехали ли заказы за этот день. За изменениями не следим.
+      - name: orders_count
+        description: Заказы без отмененных. Одна из четырех отслеживаемых величин.
+      - name: orders_cancelled_count
+        description: Отмененные заказы. За изменениями не следим.
+      - name: lines_count
+        description: Позиции после дедупликации. За изменениями не следим.
+      - name: units_sold
+        description: Проданные штуки. За изменениями не следим.
+      - name: revenue_gross
+        description: Выручка брутто. Одна из четырех отслеживаемых величин.
+      - name: returns_amount
+        description: >
+          Возвраты к дате заказа. Одна из четырех отслеживаемых величин и
+          обычно единственная, которая двигается.
+      - name: returns_arrived_amount
+        description: Возвраты по дате приезда. За изменениями не следим.
+      - name: revenue_net
+        description: Выручка нетто. Одна из четырех отслеживаемых величин.
+      - name: dbt_scd_id
+        description: Служебный идентификатор версии, ставит dbt.
+      - name: dbt_updated_at
+        description: Служебная отметка времени версии, ставит dbt.
+      - name: dbt_valid_from
+        description: >
+          С какого момента версия действует. Именно она становится датой
+          пересчета в журнале ревизий.
+      - name: dbt_valid_to
+        description: >
+          До какого момента версия действовала. Пусто у текущей версии - той,
+          что сейчас лежит в витрине.

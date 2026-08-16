@@ -25,8 +25,12 @@ models:
             columns: [store_id, order_date]
     columns:
       - name: store_id
+        description: Магазин. Часть зерна.
         data_tests: [not_null]
       - name: order_date
+        description: >
+          День покупки. Часть зерна. Возвраты относятся именно к нему, а не ко
+          дню своего приезда, и поэтому строка может быть переписана позже.
         data_tests: [not_null]
       - name: has_orders
         description: >
@@ -39,6 +43,10 @@ models:
         description: >
           Отмененные заказы. Вынесены отдельно, а не выброшены: день, где
           половина заказов отменилась, обязан отличаться от дня без заказов.
+      - name: lines_count
+        description: Позиции в неотмененных заказах, уже после дедупликации.
+      - name: units_sold
+        description: Проданные штуки в неотмененных заказах.
       - name: revenue_gross
         description: >
           Выручка по неотмененным заказам. Null, если данные за день не
@@ -58,18 +66,24 @@ models:
   - name: mart_store_daily_conversion
     description: >
       Конверсия по магазину и дню. Зерно - (store_id, traffic_date), те же
-      62 690 строк.
+      62 690 строк. Окна пересчета у этой витрины нет: ни трафик, ни заказы
+      задним числом не переписываются.
     data_tests:
       - unique_grain:
           arguments:
             columns: [store_id, traffic_date]
     columns:
       - name: store_id
+        description: Магазин. Часть зерна.
         data_tests: [not_null]
       - name: traffic_date
+        description: День наблюдения. Часть зерна.
         data_tests: [not_null]
       - name: has_traffic
+        description: Приехал ли трафик за этот день. Ложь означает непришедшую партицию.
         data_tests: [not_null]
+      - name: has_orders
+        description: Приехали ли заказы за этот день.
       - name: visitors
         description: Посетители по дверному счетчику. Null, если трафик за день не приехал.
         data_tests: [not_negative]
@@ -88,17 +102,21 @@ models:
   - name: mart_store_daily_sales_trend
     description: >
       Недельный фон выручки поверх витрины продаж. Отдельная модель, потому что
-      скользящее окно перетягивает соседние строки, а на этапе 4 витрина станет
-      инкрементальной.
+      скользящее окно перетягивает соседние строки, а витрина продаж
+      инкрементальная.
     data_tests:
       - unique_grain:
           arguments:
             columns: [store_id, order_date]
     columns:
       - name: store_id
+        description: Магазин. Часть зерна.
         data_tests: [not_null]
       - name: order_date
+        description: День покупки. Часть зерна.
         data_tests: [not_null]
+      - name: revenue_net
+        description: Чистая выручка дня, перенесена из витрины продаж для удобства чтения.
       - name: revenue_net_avg_7d
         description: >
           Скользящее среднее чистой выручки за 7 дней. Пусто, если в окне есть
@@ -117,8 +135,10 @@ models:
             columns: [store_id, flag_date, check_name]
     columns:
       - name: store_id
+        description: Магазин, к которому относится флаг.
         data_tests: [not_null]
       - name: flag_date
+        description: День, к которому относится флаг. Часть зерна.
         data_tests: [not_null]
       - name: check_name
         description: >
@@ -154,6 +174,7 @@ models:
             columns: [store_id, order_date, version_no]
     columns:
       - name: store_id
+        description: Магазин, чье число пересчиталось.
         data_tests: [not_null]
       - name: order_date
         description: День, за который изменилось число, а не день пересчета.
@@ -172,6 +193,10 @@ models:
         description: Что опубликовано после.
       - name: revenue_net_delta
         description: Насколько сдвинулось. Отрицательное - число уменьшилось.
+      - name: returns_amount_was
+        description: Возвраты, отнесенные к этому дню, до пересчета.
+      - name: returns_amount_became
+        description: Они же после. Разница с предыдущей колонкой обычно и есть вся ревизия.
       - name: reason
         description: >
           Причина не угадывается, а выводится из того, какие величины разошлись.
