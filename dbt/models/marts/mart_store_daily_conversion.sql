@@ -16,16 +16,44 @@
 -- Ноль посетителей при живых чеках - не ноль, а сообщение источника о том, что
 -- прибор не считал. Поэтому nullif и null в результате, а не деление на ноль и
 -- не бесконечность. Сам флаг качества здесь не выставляется: витрина отдает
--- ингредиенты, а суждение выносит гейт этапа 3.
+-- ингредиенты, а суждение выносит гейт.
+--
+-- ОКНА ПЕРЕСЧЕТА У ЭТОЙ ВИТРИНЫ НЕТ, и это главное, что стоит про нее знать.
+--
+-- Витрина продаж пересобирает 28 дней назад, потому что возврат приезжает
+-- позже покупки и меняет выручку прошлого. Здесь менять задним числом нечего:
+-- ни трафик, ни заказы за прошлый день не переписываются - у них нет второй
+-- даты, по которой они могли бы приехать позже. Поэтому прогон трогает ровно
+-- целевую дату.
+--
+-- Отсюда правило, которое дороже самой настройки: окно пересчета - не общая
+-- настройка пайплайна, а свойство конкретной витрины. Ставить его везде
+-- одинаково значит либо пересчитывать лишнее, либо не досчитывать нужное.
+
+{{ config(
+    materialized = 'incremental',
+    unique_key = ['store_id', 'traffic_date'],
+    incremental_strategy = 'delete+insert'
+) }}
+
+{% set run_date = var('run_date', none) %}
+
+{% if is_incremental() and run_date %}
+    {% set on_run_date = "= date '" ~ run_date ~ "'" %}
+{% else %}
+    {% set on_run_date = none %}
+{% endif %}
 
 with spine as (
     select store_id, calendar_date
     from {{ ref('int_store_day_spine') }}
+    {% if on_run_date %} where calendar_date {{ on_run_date }} {% endif %}
 ),
 
 traffic as (
     select store_id, traffic_date, visitors
     from {{ ref('stg_store_traffic') }}
+    {% if on_run_date %} where traffic_date {{ on_run_date }} {% endif %}
 ),
 
 offline_orders as (
@@ -35,12 +63,14 @@ offline_orders as (
         count(*) as orders_offline
     from {{ ref('stg_orders') }}
     where is_offline and not is_cancelled
+    {% if on_run_date %} and order_date {{ on_run_date }} {% endif %}
     group by store_id, order_date
 ),
 
 orders_present as (
     select distinct store_id, order_date
     from {{ ref('stg_orders') }}
+    {% if on_run_date %} where order_date {{ on_run_date }} {% endif %}
 ),
 
 joined as (

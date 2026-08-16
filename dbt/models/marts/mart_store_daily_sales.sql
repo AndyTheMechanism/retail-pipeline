@@ -20,10 +20,43 @@
 -- заказ. Отмененные не выбрасываются, а выносятся отдельной колонкой - день,
 -- где половина заказов отменилась, обязан отличаться от дня, когда их просто
 -- не было.
+--
+-- ПРО ОКНО ПЕРЕСЧЕТА.
+--
+-- Витрина инкрементальная, и стратегия записи та же, что у загрузки сырья, -
+-- delete-and-insert по ключу. Симметрия не случайная: повторный прогон за ту
+-- же дату обязан давать то же состояние и там, и тут, а не задвоение.
+--
+-- Ежедневный прогон пересобирает не один день, а окно назад, потому что
+-- возврат приезжает позже своей покупки и меняет выручку прошлого. Размер окна
+-- задан переменной return_window_days в dbt_project.yml, там же обоснование
+-- числом. Считать всю историю каждый день дорого, считать только сегодня -
+-- неверно; окно - это цена, выбранная осознанно, а не компромисс по невнимению.
+--
+-- Без run_date фильтра нет и витрина собирается целиком. Оба пути дают
+-- одинаковый результат - это и проверяется контрольными суммами.
+
+{{ config(
+    materialized = 'incremental',
+    unique_key = ['store_id', 'order_date'],
+    incremental_strategy = 'delete+insert'
+) }}
+
+{% set run_date = var('run_date', none) %}
+{% set window_days = var('return_window_days') %}
+
+{% if is_incremental() and run_date %}
+    {% set window_start = "date '" ~ run_date ~ "' - " ~ window_days %}
+    {% set window_end = "date '" ~ run_date ~ "'" %}
+    {% set in_window = "between " ~ window_start ~ " and " ~ window_end %}
+{% else %}
+    {% set in_window = none %}
+{% endif %}
 
 with spine as (
     select store_id, calendar_date
     from {{ ref('int_store_day_spine') }}
+    {% if in_window %} where calendar_date {{ in_window }} {% endif %}
 ),
 
 orders as (
@@ -33,6 +66,7 @@ orders as (
         count(*) filter (where not is_cancelled) as orders_count,
         count(*) filter (where is_cancelled)     as orders_cancelled_count
     from {{ ref('stg_orders') }}
+    {% if in_window %} where order_date {{ in_window }} {% endif %}
     group by store_id, order_date
 ),
 
@@ -45,6 +79,7 @@ lines as (
         sum(line_amount) as revenue_gross
     from {{ ref('int_order_lines') }}
     where not is_cancelled
+    {% if in_window %} and order_date {{ in_window }} {% endif %}
     group by store_id, order_date
 ),
 
@@ -54,6 +89,9 @@ returns_by_order_date as (
         order_date,
         sum(returned_amount) as returns_amount
     from {{ ref('int_returns_attributed') }}
+    -- Возврат относится к дате заказа, поэтому и окно режется по ней: дата
+    -- приезда у этих возвратов может быть любой, в том числе сегодняшней.
+    {% if in_window %} where order_date {{ in_window }} {% endif %}
     group by store_id, order_date
 ),
 
@@ -63,6 +101,8 @@ returns_by_arrival as (
         returned_date,
         sum(returned_amount) as returns_arrived_amount
     from {{ ref('int_returns_attributed') }}
+    -- А эта колонка живет по второй оси, и окно ей режется по дате приезда.
+    {% if in_window %} where returned_date {{ in_window }} {% endif %}
     group by store_id, returned_date
 ),
 
