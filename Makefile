@@ -10,6 +10,8 @@ COMPOSE := $(shell if command -v docker >/dev/null 2>&1; then echo "docker compo
 DB_CONTAINER := retail-pipeline-db
 DB_USER      := pipeline
 DB_NAME      := warehouse
+DB_PASSWORD  := $(or $(POSTGRES_PASSWORD),pipeline)
+DB_PORT      := $(or $(POSTGRES_PORT),5432)
 
 # Интерпретатор можно подменить: make venv-dbt PYTHON=python3.12. Нужно это
 # ровно в одном случае - если системный python3 старше того, что требует dbt.
@@ -38,6 +40,29 @@ CHECKS_PY   := $(CHECKS_VENV)/bin/python
 #   make models VARS='{return_window_days: 14}'
 DBT_VARS = $(if $(VARS),--vars '$(VARS)',)
 
+# Окружение Airflow, четвертое. Ставится по официальному constraints-файлу,
+# адрес которого зависит и от версии Airflow, и от версии интерпретатора.
+# Версия живет в requirements-airflow.txt, и берется она оттуда, чтобы не
+# разъехаться: два места для одного числа рано или поздно разойдутся.
+AIRFLOW_VENV    := .venv-airflow
+AIRFLOW         := $(AIRFLOW_VENV)/bin/airflow
+AIRFLOW_DAG     := retail_pipeline
+AIRFLOW_VERSION := $(shell sed -n 's/^apache-airflow.*==\(.*\)$$/\1/p' requirements-airflow.txt)
+AIRFLOW_PY_TAG  := $(shell $(PYTHON) -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null)
+AIRFLOW_CONSTRAINTS := https://raw.githubusercontent.com/apache/airflow/constraints-$(AIRFLOW_VERSION)/constraints-$(AIRFLOW_PY_TAG).txt
+
+# Метабаза мигрируется один раз; отметка о том, что это уже сделано.
+AIRFLOW_DB_STAMP := $(CURDIR)/airflow/.db-migrated
+
+# Airflow настраивается переменными окружения, а не файлом. Свой airflow.cfg он
+# сгенерирует сам - в нем больше ста килобайт чужих умолчаний, и объяснить их
+# нельзя. Здесь пять строк, и каждая объяснима за минуту.
+AIRFLOW_HOME := $(CURDIR)/airflow
+AIRFLOW__DATABASE__SQL_ALCHEMY_CONN := postgresql+psycopg2://$(DB_USER):$(DB_PASSWORD)@127.0.0.1:$(DB_PORT)/airflow_meta
+AIRFLOW__CORE__DAGS_FOLDER := $(CURDIR)/airflow/dags
+AIRFLOW__CORE__LOAD_EXAMPLES := False
+AIRFLOW__CORE__EXECUTOR := LocalExecutor
+
 # Если рядом лежит .env - подхватить и передать генератору. Файл
 # необязательный: значения по умолчанию совпадают с docker-compose.yml, и на
 # чистом клоне все работает без него.
@@ -45,7 +70,7 @@ DBT_VARS = $(if $(VARS),--vars '$(VARS)',)
 export
 
 .DEFAULT_GOAL := help
-.PHONY: help up down reset psql venv venv-dbt seed seed-day defects verify measure-returns models dbt reconcile run test backfill
+.PHONY: help up down reset psql venv venv-dbt venv-airflow airflow-init airflow seed seed-day defects verify measure-returns models dbt reconcile run test backfill
 
 help: ## Показать список целей
 	@echo 'Пайплайн розничной воронки. Движок: $(ENGINE)'
@@ -120,6 +145,31 @@ $(DBT_VENV): requirements-dbt.txt
 
 venv-dbt: $(DBT_VENV) ## Собрать виртуальное окружение dbt
 
+# Официальный compose-файл Airflow не используется намеренно: восемь сервисов и
+# больше двухсот строк. Здесь Airflow ставится локально, а метабаза живет во
+# второй базе того же контейнера, что и хранилище.
+$(AIRFLOW_VENV): requirements-airflow.txt
+	@test -n "$(AIRFLOW_VERSION)" || { \
+		echo 'Не удалось прочитать версию Airflow из requirements-airflow.txt.'; \
+		exit 1; }
+	$(PYTHON) -m venv $(AIRFLOW_VENV)
+	$(AIRFLOW_VENV)/bin/pip -q install --upgrade pip
+	@echo 'Ставлю Airflow $(AIRFLOW_VERSION) по constraints для Python $(AIRFLOW_PY_TAG)'
+	$(AIRFLOW_VENV)/bin/pip -q install -r requirements-airflow.txt \
+		--constraint "$(AIRFLOW_CONSTRAINTS)"
+	@touch $(AIRFLOW_VENV)
+
+venv-airflow: $(AIRFLOW_VENV) ## Собрать виртуальное окружение Airflow
+
+$(AIRFLOW_DB_STAMP): $(AIRFLOW_VENV)
+	$(AIRFLOW) db migrate
+	@touch $@
+
+airflow-init: up $(AIRFLOW_DB_STAMP) ## Создать метабазу Airflow
+
+airflow: up $(AIRFLOW_DB_STAMP) ## Поднять веб-интерфейс Airflow на localhost:8080
+	$(AIRFLOW) standalone
+
 $(CHECKS_VENV): requirements-checks.txt
 	$(PYTHON) -m venv $(CHECKS_VENV)
 	$(CHECKS_VENV)/bin/pip -q install --upgrade pip
@@ -178,13 +228,23 @@ measure-returns: up $(VENV) ## Распределение задержки во�
 test: up $(DBT_VENV) ## Прогнать тесты-гейты по уже собранным моделям
 	$(DBT) test --project-dir $(DBT_DIR) $(DBT_VARS)
 
-run: ## Прогнать пайплайн за дату (этап 4)
-	@echo 'Этап 4 не сделан: DAG и расписания еще нет.'
-	@echo 'Витрины собираются с гейтом, но целиком и по команде: make models.'
-	@echo 'Условие приемки: повторный прогон за ту же дату не задваивает данные.'
-	@exit 1
+# Прогон идет через airflow dags test: DAG выполняется целиком и синхронно, без
+# поднятого планировщика. Для проекта, который должен заводиться одной командой,
+# это важнее, чем демонстрация демонов: зависимости, ретраи и расписание в DAG
+# объявлены, а запустить его можно, ничего не поднимая. Веб-интерфейс, если он
+# нужен, поднимается отдельно - make airflow.
+run: up $(VENV) $(DBT_VENV) $(AIRFLOW_DB_STAMP) ## Прогнать пайплайн за дату: make run DATE=2026-03-14
+	@test -n "$(DATE)" || { echo 'Нужна дата: make run DATE=2026-03-14'; exit 1; }
+	$(AIRFLOW) dags test $(AIRFLOW_DAG) $(DATE)
 
-backfill: ## Пересчитать за период: make backfill FROM=... TO=... (этап 4)
-	@echo 'Этап 4 не сделан: пересчета еще нет.'
-	@echo 'Условие приемки: пересчет за произвольный прошлый день - одна команда, тот же результат.'
-	@exit 1
+# Даты считает python, а не date -d: GNU-шный синтаксис сдвига даты есть не
+# везде, а интерпретатор здесь и так требуется.
+backfill: up $(VENV) $(DBT_VENV) $(AIRFLOW_DB_STAMP) ## Пересчитать период: make backfill FROM=2026-03-01 TO=2026-03-07
+	@test -n "$(FROM)" -a -n "$(TO)" || { \
+		echo 'Нужны границы: make backfill FROM=2026-03-01 TO=2026-03-07'; exit 1; }
+	@for day in $$($(PY) -c "import datetime as dt; \
+a = dt.date.fromisoformat('$(FROM)'); b = dt.date.fromisoformat('$(TO)'); \
+print(' '.join(str(a + dt.timedelta(days=i)) for i in range((b - a).days + 1)))"); do \
+		echo; echo "=== $$day ==="; \
+		$(AIRFLOW) dags test $(AIRFLOW_DAG) $$day || exit 1; \
+	done
