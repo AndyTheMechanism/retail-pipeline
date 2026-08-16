@@ -11,8 +11,22 @@ DB_CONTAINER := retail-pipeline-db
 DB_USER      := pipeline
 DB_NAME      := warehouse
 
+# Интерпретатор можно подменить: make venv-dbt PYTHON=python3.12. Нужно это
+# ровно в одном случае - если системный python3 старше того, что требует dbt.
+PYTHON ?= python3
+
 VENV := .venv
 PY   := $(VENV)/bin/python
+
+# Окружение dbt отдельное от генератора. Почему - в requirements-dbt.txt.
+DBT_VENV := .venv-dbt
+DBT      := $(DBT_VENV)/bin/dbt
+DBT_DIR  := dbt
+
+# Профиль лежит в проекте, а не в домашнем каталоге. Без этой переменной dbt
+# ушел бы искать его в ~/.dbt и нашел бы там чужой, от другого проекта.
+# В окружение уходит через голый export ниже.
+DBT_PROFILES_DIR := $(CURDIR)/$(DBT_DIR)
 
 # Если рядом лежит .env - подхватить и передать генератору. Файл
 # необязательный: значения по умолчанию совпадают с docker-compose.yml, и на
@@ -21,7 +35,7 @@ PY   := $(VENV)/bin/python
 export
 
 .DEFAULT_GOAL := help
-.PHONY: help up down reset psql venv seed seed-day defects verify measure-returns run test backfill
+.PHONY: help up down reset psql venv venv-dbt seed seed-day defects verify measure-returns dbt run test backfill
 
 help: ## Показать список целей
 	@echo 'Пайплайн розничной воронки. Движок: $(ENGINE)'
@@ -73,12 +87,34 @@ $(VENV): requirements.txt
 		echo '  Debian, Ubuntu, WSL:  sudo apt install -y python3-venv'; \
 		echo '  Fedora:               sudo dnf install -y python3'; \
 		exit 1; }
-	python3 -m venv $(VENV)
+	$(PYTHON) -m venv $(VENV)
 	$(VENV)/bin/pip -q install --upgrade pip
 	$(VENV)/bin/pip -q install -r requirements.txt
 	@touch $(VENV)
 
-venv: $(VENV) ## Собрать виртуальное окружение
+venv: $(VENV) ## Собрать виртуальное окружение генератора
+
+# Проверка версии стоит до создания окружения: dbt требует Python 3.10 и выше,
+# а его собственное сообщение об этом тонет в выводе резолвера pip.
+$(DBT_VENV): requirements-dbt.txt
+	@$(PYTHON) -c 'import sys; raise SystemExit(sys.version_info < (3, 10))' || { \
+		echo 'dbt требует Python 3.10 или новее, а $(PYTHON) старше.'; \
+		echo '  Debian, Ubuntu, WSL:  sudo apt install -y python3.12 python3.12-venv'; \
+		echo '  Fedora:               sudo dnf install -y python3.12'; \
+		echo 'Дальше звать с явным интерпретатором: make venv-dbt PYTHON=python3.12'; \
+		exit 1; }
+	$(PYTHON) -m venv $(DBT_VENV)
+	$(DBT_VENV)/bin/pip -q install --upgrade pip
+	$(DBT_VENV)/bin/pip -q install -r requirements-dbt.txt
+	@touch $(DBT_VENV)
+
+venv-dbt: $(DBT_VENV) ## Собрать виртуальное окружение dbt
+
+# .PHONY у этой цели не для порядка: рядом лежит каталог dbt/, и без нее make
+# посмотрит на каталог, решит, что цель свежая, и молча ничего не сделает.
+dbt: up $(DBT_VENV) ## Позвать dbt напрямую, например make dbt ARGS=debug
+	@test -n "$(ARGS)" || { echo 'Нужны аргументы, например: make dbt ARGS=debug'; exit 1; }
+	$(DBT) $(ARGS) --project-dir $(DBT_DIR)
 
 # seed сам поднимает базу и собирает окружение. Иначе "воспроизводится одной
 # командой" превратилось бы в три команды с примечанием.
