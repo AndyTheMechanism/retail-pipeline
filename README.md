@@ -9,21 +9,28 @@ silently.**
 Stack: PostgreSQL, dbt, Airflow, Python. The data is synthetic; the generator
 lives in this repository and is deterministic under a seed.
 
-> **Status: stage 1 of 6.** The database and the raw layer with data are in
-> place. Models, tests and orchestration are not. What is missing is listed
-> below and printed by `make`.
+> **Status: stage 2 of 6.** The database, the raw layer and the sales and
+> conversion marts are in place. Tests and orchestration are not: the marts are
+> built in full and without checks. What is missing is listed below and printed
+> by `make`.
 
 ## Run it
 
 ```bash
-make seed    # start the database, build the environment, generate the data
-make psql    # open a shell on the database
-make down    # stop; the data survives
+make seed       # start the database, build the environment, generate the data
+make models     # build the marts
+make reconcile  # reconcile the marts against the raw layer
+make psql       # open a shell on the database
+make down       # stop; the data survives
 ```
 
 `make seed` does everything itself: starts Postgres, creates the virtual
 environment, applies the schema and loads an eighteen-month horizon. On a fresh
 clone it is the only command you need. It takes about a minute.
+
+`make models` is just as self-contained: dbt has a virtual environment of its
+own and the target builds it. A full run of the twelve models takes about ten
+seconds.
 
 You need a container engine and `make`. Which engine does not matter: `make up`
 detects whether you have docker or podman and calls the right compose. There is
@@ -80,6 +87,58 @@ a return arrives on its own day and changes the revenue of an earlier one. So
 rebuilding one partition looks 30 days back and reconstructs exactly the
 returns a full run would have produced. Verified by comparing checksums.
 
+## The layers
+
+Three layers, one directory each: `staging` fixes the shape, `intermediate`
+brings sources together, `marts` hands out the marts. The schemas in the
+database carry the same names — `staging`, `intermediate`, `marts`.
+
+There are two marts — sales per store and day, conversion per store and day —
+plus a weekly revenue baseline as a separate model on top of sales. All three
+share one grain: store by day from the store's opening date, exactly 62,690
+rows. A calendar sets that grain, not the data, and deliberately so. A day
+where nothing arrived from the source has to show up as a row rather than as a
+missing one; otherwise "the store was closed", "the data did not arrive" and
+"there were no sales" become indistinguishable — and telling them apart is what
+the gate is for.
+
+Hence a rule kept everywhere here: **emptiness is not replaced by zero.** Zero
+means "we counted, and it came to zero"; a null means "there was nothing to
+count".
+
+The marts are built in full: incrementality and the reprocessing window belong
+to stage 4. There is not a single test — that is stage 3, and their absence
+here is deliberate.
+
+### The two decisions people ask about first
+
+**A return belongs to the order date, not to the arrival date.** It arrives
+days later and reduces the revenue of the day the purchase was made — so
+yesterday's number moves. That is not a side effect but the subject of the
+project: the reprocessing window and the revision log both rest on it.
+Attributing by arrival date would give an immutable history. The second axis
+stays alongside as its own column, so it is visible where the change came from.
+
+**Duplicates are removed by grain, not by `distinct`.** `distinct` only removes
+exact copies and silently leaves two rows on one line when the copies have
+diverged. A window function over `(order_id, line_no)` states the grain, and
+counts how many source rows there were for that line while it is at it. The
+ordering inside the window is explicit: without it the order is undefined, two
+runs would produce different numbers, and reproducibility would break silently.
+
+### Reconciliation
+
+`make reconcile` computes the same things a second time — from the raw layer,
+in pandas — and compares them with the marts. It is deliberately not written in
+SQL: a check made with the same tool over the same models would repeat their
+mistake without noticing it.
+
+Acceptance rests on two opposite statements. The mart must agree with the raw
+layer reduced to the grain, and it must **disagree** with the raw layer as it
+stands — on exactly the five dates where duplicates are planted, and by exactly
+the copies removed. No discrepancy anywhere would mean the deduplication did
+nothing.
+
 ## How it is put together
 
 One Postgres container holding two databases: `warehouse` for the raw layer and
@@ -91,6 +150,12 @@ project is meant to show.
 The official Airflow compose file is deliberately not used. It carries eight
 services and over two hundred lines; they cannot be explained in a minute, and
 being explainable is a requirement here.
+
+There are three virtual environments, one per tool: the generator, dbt and the
+reconciliation. Their versions are not obliged to agree, and a fourth will join
+them at stage 4 for Airflow. What ties them together is an exit code rather
+than a shared set of packages: the DAG calls dbt as a subprocess instead of
+importing it.
 
 ## Three questions this file has to answer
 
@@ -115,7 +180,7 @@ reduced to three headings full of generalities.
 |---|---|---|
 | 0. Skeleton | Database, Makefile, repository skeleton | `make up` brings the database up ✅ |
 | 1. Data | Synthetic generator, `raw` schema, planted defects | `make seed` twice leaves the same state ✅ |
-| 2. dbt layers | staging, intermediate, sales and conversion marts | `dbt run` builds the marts |
+| 2. dbt layers | staging, intermediate, sales and conversion marts | `dbt run` builds the marts ✅ |
 | 3. Test gates | Invariants that stop, checks that flag | Broken data is not published |
 | 4. Airflow | DAG, idempotency, reprocessing window, backfill | Reprocessing a past day is one command |
 | 5. Revisions | Revision log and three debugging scenarios | Every scenario reproduces from scratch |
