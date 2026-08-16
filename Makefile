@@ -70,7 +70,7 @@ AIRFLOW__CORE__EXECUTOR := LocalExecutor
 export
 
 .DEFAULT_GOAL := help
-.PHONY: help up down reset psql venv venv-dbt venv-airflow airflow-init airflow seed seed-day defects verify measure-returns models dbt reconcile run test backfill
+.PHONY: help up down reset psql venv venv-dbt venv-airflow airflow-init airflow seed seed-day defects verify measure-returns models dbt reconcile revisions run test backfill scenario-late-return scenario-missing-partition scenario-broken-counter
 
 help: ## Показать список целей
 	@echo 'Пайплайн розничной воронки. Движок: $(ENGINE)'
@@ -236,6 +236,24 @@ test: up $(DBT_VENV) ## Прогнать тесты-гейты по уже со�
 run: up $(VENV) $(DBT_VENV) $(AIRFLOW_DB_STAMP) ## Прогнать пайплайн за дату: make run DATE=2026-03-14
 	@test -n "$(DATE)" || { echo 'Нужна дата: make run DATE=2026-03-14'; exit 1; }
 	$(AIRFLOW) dags test $(AIRFLOW_DAG) $(DATE)
+
+revisions: up ## Показать журнал ревизий: что изменилось, когда и почему
+	@$(ENGINE) exec $(DB_CONTAINER) psql -h 127.0.0.1 -U $(DB_USER) -d $(DB_NAME) -P pager=off -c \
+		"select store_id, order_date, revised_at, revenue_net_was, revenue_net_became, \
+		        revenue_net_delta, reason \
+		 from marts.mart_store_daily_revisions \
+		 order by revised_at desc, revenue_net_delta limit 20"
+
+# Сценарии зовут те же команды, что позвал бы человек, а не лезут в базу в обход
+# пайплайна: иначе показ доказывал бы работу показа.
+scenario-late-return: up $(VENV) $(DBT_VENV) $(AIRFLOW_DB_STAMP) ## Сценарий: вчерашнее число изменилось, и видно почему
+	$(PY) -m scenarios late-return
+
+scenario-missing-partition: up $(VENV) $(DBT_VENV) $(AIRFLOW_DB_STAMP) ## Сценарий: источник не приехал, цепочка встала
+	$(PY) -m scenarios missing-partition
+
+scenario-broken-counter: up $(VENV) $(DBT_VENV) $(AIRFLOW_DB_STAMP) ## Сценарий: прибор врет, сеть считается дальше
+	$(PY) -m scenarios broken-counter
 
 # Даты считает python, а не date -d: GNU-шный синтаксис сдвига даты есть не
 # везде, а интерпретатор здесь и так требуется.
