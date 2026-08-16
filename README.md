@@ -9,10 +9,12 @@ silently.**
 Stack: PostgreSQL, dbt, Airflow, Python. The data is synthetic; the generator
 lives in this repository and is deterministic under a seed.
 
-> **Status: stage 4 of 6.** The pipeline runs: a DAG computes a day on a
-> schedule, broken data never reaches the marts, and reprocessing a past day is
-> one command. The revision log and the documentation are missing — those are
-> stages 5 and 6. What is missing is listed below and printed by `make`.
+> **Status: stage 5 of 6.** The pipeline runs and explains itself: a DAG
+> computes a day, broken data never reaches the marts, reprocessing a past day
+> is one command, and every change to a previously published number leaves a row
+> in the revision log. What is left is the documentation — dictionary, lineage
+> and the query-plan chapter. What is missing is listed below and printed by
+> `make`.
 
 ## Run it
 
@@ -20,6 +22,7 @@ lives in this repository and is deterministic under a seed.
 make seed                                    # start the database, generate the data
 make run DATE=2026-03-14                     # run the pipeline for one date
 make backfill FROM=2026-03-01 TO=2026-03-05  # reprocess a period
+make revisions                               # what changed, when and why
 make reconcile                               # reconcile the marts against the raw layer
 make psql                                    # open a shell on the database
 make down                                    # stop; the data survives
@@ -210,6 +213,58 @@ stands — on exactly the five dates where duplicates are planted, and by exactl
 the copies removed. No discrepancy anywhere would mean the deduplication did
 nothing.
 
+## The revision log
+
+The mart is never rewritten silently. Every recomputation that changed a
+previously published number leaves a row behind: store, day, when it was
+recomputed, before, after, delta and reason.
+
+```bash
+make revisions
+```
+
+It rests on a dbt snapshot: after every build the state of the sales mart is
+captured, and a new version appears only when one of four values has actually
+moved. The log itself is a view over the snapshot that puts adjacent versions
+side by side with a window function.
+
+The reason is not guessed but derived from which quantities diverged. Returns
+changed while gross stayed put — a late return arrived, which is ordinary life
+in this domain. Gross changed — the raw layer was rebuilt, and that is worth
+looking into.
+
+This is the answer to the pain the whole project is built around. "The mart
+updated silently and wrongly" is the employer's complaint; "the mart updated,
+and here is the row saying what it was, what it became and why" is the answer.
+
+## Three scenarios
+
+Each reproduces from scratch with one command and rests on defects planted into
+the raw layer by the generator rather than staged for the demo.
+
+```bash
+make scenario-late-return        # yesterday's number moved, and you can see why
+make scenario-missing-partition  # the source did not arrive, the chain stopped
+make scenario-broken-counter     # the device lies, the network still counts
+```
+
+**The late return** is the substantial one. It cannot be shown on finished data:
+the raw layer already holds the whole history, so the mart is computed with
+every return from the start. So the scenario winds time back — removes the
+returns that "have not arrived yet" — and replays five days in a row the way a
+scheduler would. The replay itself restores the deleted partitions, so by the
+end the raw layer is exactly as it was. The log fills with 891 revisions
+totalling −1.63M, every one of them reading "late return".
+
+The same output names the price of the window as a number: of the 1,089 returns
+removed, 1,083 arrived within 28 days and were accounted for, while 6 worth
+26.5K arrived later — their days were no longer rebuilt, so the number for them
+stayed as it was. This is not hidden: those days carry the
+`return_outside_window` flag.
+
+What broke and how it was fixed, including the build's own incidents, is in
+[`INCIDENTS.md`](INCIDENTS.md).
+
 ## The daily run
 
 A DAG of four tasks — exactly the chain from the blueprint:
@@ -345,7 +400,7 @@ reduced to three headings full of generalities.
 | 2. dbt layers | staging, intermediate, sales and conversion marts | `dbt run` builds the marts ✅ |
 | 3. Test gates | Invariants that stop, checks that flag | Broken data is not published ✅ |
 | 4. Airflow | DAG, idempotency, reprocessing window, backfill | Reprocessing a past day is one command ✅ |
-| 5. Revisions | Revision log and three debugging scenarios | Every scenario reproduces from scratch |
+| 5. Revisions | Revision log and three debugging scenarios | Every scenario reproduces from scratch ✅ |
 | 6. Documentation | Dictionary, lineage, the query-plan chapter | All six completion criteria are met |
 
 ## Licence
