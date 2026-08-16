@@ -9,17 +9,37 @@ silently.**
 Stack: PostgreSQL, dbt, Airflow, Python. The data is synthetic; the generator
 lives in this repository and is deterministic under a seed.
 
-> **Status: stage 5 of 6.** The pipeline runs and explains itself: a DAG
-> computes a day, broken data never reaches the marts, reprocessing a past day
-> is one command, and every change to a previously published number leaves a row
-> in the revision log. What is left is the documentation — dictionary, lineage
-> and the query-plan chapter. What is missing is listed below and printed by
-> `make`.
+> **Status: finished.** All six stages are closed. The pipeline computes revenue
+> and conversion, keeps broken data out of the marts, reprocesses a past day
+> with one command and the same result, and records every change to a previously
+> published number.
+
+Three things people ask first, and the short answers.
+
+**When a task fails,** the chain stops before the marts are built, and the
+earlier number is not rewritten at all — neither correctly nor incorrectly. An
+alert fires, the mart stays bit-for-bit as it was. How that works is in
+[What "not published" actually is](#what-not-published-actually-is).
+
+**Reprocessing an earlier period** is `make run DATE=...` or
+`make backfill FROM=... TO=...`, and a repeat run yields the same thing:
+everything is written with delete-and-insert by key. Verified by checksums —
+details in [Reprocessing a past day](#reprocessing-a-past-day).
+
+**A test breaks the chain rather than logging a warning** when reprocessing can
+fix the problem: a doubled grain, a broken reference, a missing partition. When
+it cannot — a broken counter at one store — the store is flagged and the network
+is still counted. Where the line runs is in [Stop and flag](#stop-and-flag).
 
 ## Run it
 
 ```bash
-make seed                                    # start the database, generate the data
+make demo                                    # everything from scratch: data, marts, reconciliation
+```
+
+Then, piece by piece:
+
+```bash
 make run DATE=2026-03-14                     # run the pipeline for one date
 make backfill FROM=2026-03-01 TO=2026-03-05  # reprocess a period
 make revisions                               # what changed, when and why
@@ -28,16 +48,14 @@ make psql                                    # open a shell on the database
 make down                                    # stop; the data survives
 ```
 
-The marts can also be built without the orchestrator, in full: `make models`
-builds them behind the same checks, `make test` runs the checks alone.
+`make demo` is three steps in a row: `make seed` starts the database and
+generates eighteen months of data, `make models` builds the marts behind the
+checks, and `make reconcile` compares them against the raw layer. About three
+minutes in total, and the project is in working order afterwards.
 
-`make seed` does everything itself: starts Postgres, creates the virtual
-environment, applies the schema and loads an eighteen-month horizon. On a fresh
-clone it is the only command you need. It takes about a minute.
-
-`make models` is just as self-contained: dbt has a virtual environment of its
-own and the target builds it. A full run of the twelve models takes about ten
-seconds.
+Every step is self-contained: it starts the database and builds its own virtual
+environment. Fourteen models and ninety-odd checks build in about twenty seconds
+from scratch, and eleven in a run for a single date.
 
 You need a container engine and `make`. Which engine does not matter: `make up`
 detects whether you have docker or podman and calls the right compose. There is
@@ -53,10 +71,17 @@ in `.env.example`.
 make defects          # where the defects are planted
 make measure-returns  # distribution of return delay
 make verify           # table checksums
+make docs             # dbt lineage and documentation in a browser
+make dictionary       # rebuild the table and column dictionary
 make seed-day DATE=2026-03-14   # rebuild a single partition
 ```
 
 For the full list of targets, run `make` with no arguments.
+
+Three documents sit alongside this one:
+[`DICTIONARY.md`](DICTIONARY.md) — what every column means,
+[`QUERY-PLAN.md`](QUERY-PLAN.md) — one heavy query taken apart, before and after,
+[`INCIDENTS.md`](INCIDENTS.md) — what broke and what to do about it.
 
 ## The data
 
@@ -101,10 +126,11 @@ Three layers, one directory each: `staging` fixes the shape, `intermediate`
 brings sources together, `marts` hands out the marts. The schemas in the
 database carry the same names — `staging`, `intermediate`, `marts`.
 
-There are two marts — sales per store and day, conversion per store and day —
-plus a weekly revenue baseline as a separate model on top of sales. All three
-share one grain: store by day from the store's opening date, exactly 62,690
-rows. A calendar sets that grain, not the data, and deliberately so. A day
+`marts` holds five models. Two fact marts — sales per store and day, conversion
+per store and day; a weekly revenue baseline on top of sales; a quality-flag
+table; and the revision log. The first three share one grain: store by day from
+the store's opening date, exactly 62,690 rows. A calendar sets that grain, not
+the data, and deliberately so. A day
 where nothing arrived from the source has to show up as a row rather than as a
 missing one; otherwise "the store was closed", "the data did not arrive" and
 "there were no sales" become indistinguishable — and telling them apart is what
@@ -234,7 +260,7 @@ in this domain. Gross changed — the raw layer was rebuilt, and that is worth
 looking into.
 
 This is the answer to the pain the whole project is built around. "The mart
-updated silently and wrongly" is the employer's complaint; "the mart updated,
+updated silently and wrongly" is a familiar warehouse complaint; "the mart updated,
 and here is the row saying what it was, what it became and why" is the answer.
 
 ## Three scenarios
@@ -253,13 +279,34 @@ the raw layer already holds the whole history, so the mart is computed with
 every return from the start. So the scenario winds time back — removes the
 returns that "have not arrived yet" — and replays five days in a row the way a
 scheduler would. The replay itself restores the deleted partitions, so by the
-end the raw layer is exactly as it was. The log fills with 891 revisions
-totalling −1.63M, every one of them reading "late return".
+end the raw layer is exactly as it was. The log fills with 891 revisions, every
+one of them reading "late return": 722 downward totalling −2.33M and 169 upward
+totalling +0.70M, netting −1.63M.
 
-The same output names the price of the window as a number: of the 1,089 returns
-removed, 1,083 arrived within 28 days and were accounted for, while 6 worth
-26.5K arrived later — their days were no longer rebuilt, so the number for them
-stayed as it was. This is not hidden: those days carry the
+Winding time back cannot be done with the pipeline's own commands — it knows how
+to compute forward, not how to forget — so this scenario does two things
+directly in the database: it deletes the returns that "have not arrived yet" and
+clears the mart snapshot so the log fills from nothing before your eyes. Both
+are named in its output. It does wipe whatever revision history had accumulated,
+which is worth knowing before you run it.
+
+The upward revisions are not an error but a consequence of how the demo is
+built. The first snapshot is taken over the whole mart while a run rebuilds only
+a window backwards, so the days after it keep values that still account for the
+deleted returns. When such a day's turn comes it is rebuilt as of then and goes
+up, and later runs bring it down again.
+
+Hence something worth pausing on: **the log's net delta cannot be compared with
+the sum of the returns removed.** 2.88M gross was removed, while the log shows
+the movement of published numbers against a baseline that was not itself a
+single moment in time. An earlier version of this text made exactly that
+comparison and it did not add up — the write-up is in
+[`INCIDENTS.md`](INCIDENTS.md).
+
+The price of the window is named separately and as a number: of the 1,089
+returns removed, 1,083 arrived within 28 days and were accounted for, while 6
+worth 26.5K arrived later — their days were no longer rebuilt, so the number for
+them stayed as it was. This is not hidden: those days carry the
 `return_outside_window` flag.
 
 What broke and how it was fixed, including the build's own incidents, is in
@@ -374,26 +421,9 @@ it together with dbt ends in a night with the resolver. What ties them together
 is an exit code rather than a shared set of packages: the DAG calls the tools as
 subprocesses instead of importing them.
 
-## Three questions this file has to answer
+## How it was built
 
-The section needs answers, not headings: by stage 6 it dissolves into the text
-above, and the README should make all three plain without a single question
-mark —
-
-1. **what happens when a task fails** — which checks stop the chain, what is
-   left unpublished as a result, and how anyone finds out;
-2. **how to reprocess an earlier period** — one command, same result, no
-   six-step manual procedure;
-3. **why a test breaks the chain instead of logging a warning** — and where the
-   line between "stop" and "flag" runs.
-
-Empty for now: there is nothing to answer with, the machinery does not exist
-yet. The section exists so that by the end this is neither forgotten nor
-reduced to three headings full of generalities.
-
-## What is not there yet
-
-| Stage | What arrives | Done when |
+| Stage | What arrived | Done when |
 |---|---|---|
 | 0. Skeleton | Database, Makefile, repository skeleton | `make up` brings the database up ✅ |
 | 1. Data | Synthetic generator, `raw` schema, planted defects | `make seed` twice leaves the same state ✅ |
@@ -401,7 +431,17 @@ reduced to three headings full of generalities.
 | 3. Test gates | Invariants that stop, checks that flag | Broken data is not published ✅ |
 | 4. Airflow | DAG, idempotency, reprocessing window, backfill | Reprocessing a past day is one command ✅ |
 | 5. Revisions | Revision log and three debugging scenarios | Every scenario reproduces from scratch ✅ |
-| 6. Documentation | Dictionary, lineage, the query-plan chapter | All six completion criteria are met |
+| 6. Documentation | Dictionary, lineage, the query-plan chapter | All six completion criteria are met ✅ |
+
+The order was not accidental: every stage ended in a working state rather than a
+half-built one. So the commit history shows not only what came out but what was
+revised along the way — the decision about making the intermediate layer
+incremental, for instance, was reversed at the last stage on a measurement
+rather than on taste.
+
+Commit subjects are in English, bodies in Russian, matching the comments in the
+code. The first five commits are English throughout; rewriting history for the
+sake of uniformity was not worth it.
 
 ## Licence
 
