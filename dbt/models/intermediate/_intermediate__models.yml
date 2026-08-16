@@ -1,8 +1,9 @@
 version: 2
 
-# Тестов здесь тоже нет - этап 3. Промежуточный слой сводит источники и ничего
-# не решает: он оставляет видимым все, включая сироты, чтобы гейту было что
-# ловить.
+# Здесь стоит самый важный стоп всего этапа - сверка собранного чека с сырьем.
+# Она вынесена отдельным тестом в tests/assert_order_lines_match_raw.sql,
+# потому что идет к источнику напрямую, минуя staging: проверка, построенная на
+# тех же моделях, которые она проверяет, повторила бы их ошибку.
 
 models:
   - name: int_order_lines
@@ -10,41 +11,72 @@ models:
       Позиция заказа вместе с шапкой. Зерно - (order_id, line_no).
       Материализуется таблицей: тяжелый джойн и сортировка дедупликации должны
       выполниться один раз, а не на каждый запрос к витрине.
+    data_tests:
+      - unique_grain:
+          arguments:
+            columns: [order_id, line_no]
     columns:
       - name: store_id
         description: >
-          Магазин из шапки заказа. Null означает позицию без заказа - джойн
-          левый намеренно, чтобы такая строка не исчезала до проверки.
+          Магазин из шапки заказа. Джойн левый намеренно, чтобы позиция без
+          заказа не исчезла до проверки - и вот эта проверка. Null здесь
+          означает позицию-сироту, и считать по ней выручку нельзя.
+        data_tests: [not_null]
       - name: order_date
         description: >
           Дата из позиции, а не из шапки: в сыром слое это ключ партиции, и он
           есть даже у осиротевшей строки. Совпадение с датой шапки - инвариант,
-          и проверяется тестом, а не навязывается джойном.
+          и проверяется он тестом, а не навязывается джойном.
+        data_tests: [not_null]
       - name: is_cancelled
         description: Признак отмены из шапки. Отмененные не дают выручки.
+        data_tests: [not_null]
+      - name: quantity
+        data_tests: [not_null, not_negative]
       - name: line_amount
         description: Сумма позиции. Отрицательные значения не отфильтрованы намеренно.
+        data_tests: [not_null]
 
   - name: int_returns_attributed
     description: >
       Возврат, привязанный к магазину через свой заказ. Зерно - return_id.
       Модель обязательна, а не декоративна: в сыром слое возвратов нет store_id.
     columns:
+      - name: return_id
+        data_tests: [unique, not_null]
+      - name: store_id
+        description: >
+          Магазин из заказа. Null означает возврат-сироту: сумма вычиталась бы
+          из выручки неизвестно чего.
+        data_tests: [not_null]
       - name: order_date
         description: Дата исходного заказа. К ней возврат относится в витрине продаж.
+        data_tests: [not_null]
       - name: returned_date
         description: Дата приезда возврата. По ней видно, откуда взялось изменение вчерашнего числа.
+        data_tests: [not_null]
+      - name: delay_days
+        data_tests: [not_null, not_negative]
       - name: is_cancelled
         description: >
           Признак отмены исходного заказа. Возврат к отмененному заказу
-          невозможен по смыслу - колонка нужна, чтобы это можно было спросить.
+          невозможен по смыслу - это проверяет отдельный тест
+          assert_returns_belong_to_live_orders.
+        data_tests: [not_null]
 
   - name: int_store_day_spine
     description: >
       Плотная решетка "магазин на день" от даты открытия магазина. Зерно -
       (store_id, calendar_date), ровно 62 690 строк. Зерно обеих витрин.
+    data_tests:
+      - unique_grain:
+          arguments:
+            columns: [store_id, calendar_date]
     columns:
+      - name: store_id
+        data_tests: [not_null]
       - name: calendar_date
         description: >
           День горизонта. Горизонт вычисляется из наблюдаемых данных, а не
           берется константой: константа разъехалась бы с генератором молча.
+        data_tests: [not_null]

@@ -1,8 +1,9 @@
 version: 2
 
-# Ключа tests здесь нет ни у одной модели, и это не недоделка. Проверки -
-# предмет этапа 3, где отдельно решается, что роняет цепочку, а что помечает
-# флагом. Слой staging пока только приводит форму: типы, имена, зерно.
+# Проверки здесь роняют цепочку, а не помечают. Все, что в этом файле, - это
+# инварианты: утверждения, которые обязаны быть верны всегда, и если они
+# неверны, считать дальше нельзя. Флаги качества живут не в тестах, а в модели
+# mart_store_daily_quality.
 
 models:
   - name: stg_stores
@@ -10,79 +11,168 @@ models:
     columns:
       - name: store_id
         description: Идентификатор магазина.
+        data_tests: [unique, not_null]
       - name: opened_on
         description: >
           Дата открытия. До нее у магазина нет ни заказов, ни трафика, и на
           этом стоит зерно витрин: 12 магазинов из 120 открылись внутри
           горизонта, и их пустые дни - не пропущенные данные.
+        data_tests: [not_null]
 
   - name: stg_orders
     description: Шапка чека. Зерно - order_id.
     columns:
       - name: order_id
         description: Идентификатор заказа. Кодирует дату и магазин.
+        data_tests: [unique, not_null]
+      - name: store_id
+        description: Магазин, оформивший заказ.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_stores')
+                field: store_id
+      - name: order_date
+        description: Дата заказа, ключ партиции в сыром слое.
+        data_tests: [not_null]
       - name: status
         description: Значение источника, "оформлен" или "отменен".
+        data_tests:
+          # Новое значение статуса - это не сбой данных, а изменение контракта
+          # источника, о котором никто не предупредил. Молча оно превратилось бы
+          # в неверную выручку: is_cancelled считается сравнением с одной
+          # строкой, и все незнакомое стало бы "оформлен".
+          - accepted_values:
+              arguments:
+                values: ["оформлен", "отменен"]
       - name: channel
         description: Значение источника, "офлайн", "сайт" или "приложение".
+        data_tests:
+          # То же про канал, и цена ошибки тут выше: незнакомый канал не попал
+          # бы в офлайн, и конверсия по магазину поехала бы вниз без следа.
+          - accepted_values:
+              arguments:
+                values: ["офлайн", "сайт", "приложение"]
       - name: is_cancelled
         description: Признак отмены. Отмененный заказ не дает ни выручки, ни возвратов.
+        data_tests: [not_null]
       - name: is_offline
         description: >
           Признак офлайн-заказа. Числитель конверсии считается только по нему -
           дверной счетчик не видит ни сайт, ни приложение.
+        data_tests: [not_null]
 
   - name: stg_order_items
     description: >
       Позиции заказа, по одной строке на позицию. Единственное место, где
       восстанавливается зерно (order_id, line_no) после дублей выгрузки.
+    data_tests:
+      - unique_grain:
+          arguments:
+            columns: [order_id, line_no]
     columns:
       - name: order_id
         description: Заказ, к которому относится позиция.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_orders')
+                field: order_id
       - name: line_no
         description: Номер позиции внутри заказа. Вместе с order_id образует зерно.
+        data_tests: [not_null]
       - name: sku
         description: >
           Непрозрачный код позиции. Ни категории, ни бренда, ни закупочной цены
           здесь нет и не будет - это категорийный менеджмент, другая профессия.
+        data_tests: [not_null]
+      - name: quantity
+        description: Количество. Ноль встречается - это заложенный выброс.
+        data_tests: [not_null, not_negative]
       - name: line_amount
         description: >
           Сумма позиции. Может быть отрицательной: выбросы намеренно не
-          отфильтрованы, их ловит гейт этапа 3.
+          отфильтрованы, и знак здесь не проверяется - их ловит флаг, а не гейт.
+        data_tests: [not_null]
       - name: source_copies
         description: >
           Сколько строк на эту позицию было в источнике. Единица - норма,
           больше единицы означает дубль выгрузки. Колонка делает дедупликацию
           проверяемым фактом, а не подразумеваемой.
+        data_tests: [not_null]
 
   - name: stg_returns
     description: Возвраты. Зерно - return_id.
     columns:
+      - name: return_id
+        data_tests: [unique, not_null]
+      - name: order_id
+        description: Заказ, к которому относится возврат.
+        data_tests:
+          # Возврат без заказа ломает выручку нетто: сумма вычитается, а из
+          # чего - неизвестно. Это стоп, а не флаг.
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_orders')
+                field: order_id
       - name: order_date
         description: Дата исходного заказа. К ней возврат относится в витрине продаж.
+        data_tests: [not_null]
       - name: returned_date
         description: Дата приезда возврата. По ней нарезана партиция в сыром слое.
+        data_tests: [not_null]
       - name: delay_days
         description: >
           Задержка возврата в днях. Медиана 2, 90-й перцентиль 15, максимум 30.
-          На этом числе будет стоять размер окна пересчета на этапе 4.
+          На этом числе стоит размер окна пересчета.
+        data_tests:
+          # Отрицательная задержка означала бы возврат раньше покупки.
+          - not_null
+          - not_negative
 
   - name: stg_cancellations
     description: >
       Отмены. Витринами не используется намеренно: статус уже есть в заказе.
-      Нужна этапу 3 для проверки ссылочной целостности и согласия с
-      orders.status.
+      Нужна для проверки ссылочной целостности и согласия с orders.status.
     columns:
+      - name: cancellation_id
+        data_tests: [unique, not_null]
+      - name: order_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_orders')
+                field: order_id
       - name: cancelled_date
         description: Дата отмены, на 0-2 дня позже даты заказа.
+        data_tests: [not_null]
       - name: reason
         description: Причина отмены из источника.
+        data_tests: [not_null]
 
   - name: stg_store_traffic
     description: Дневной трафик точек. Зерно - (store_id, traffic_date).
+    data_tests:
+      - unique_grain:
+          arguments:
+            columns: [store_id, traffic_date]
     columns:
+      - name: store_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_stores')
+                field: store_id
+      - name: traffic_date
+        data_tests: [not_null]
       - name: visitors
         description: >
-          Посетители по дверному счетчику. Ноль здесь не приводится к null:
-          суждение о том, считал ли прибор, выносится в витрине конверсии,
-          где рядом видны чеки.
+          Посетители по дверному счетчику. Ноль здесь не приводится к null и не
+          считается ошибкой: суждение о том, считал ли прибор, выносит флаг
+          качества, где рядом видны чеки.
+        data_tests: [not_null, not_negative]
