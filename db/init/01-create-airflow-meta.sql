@@ -8,4 +8,4 @@
 CREATE DATABASE airflow_meta;
 
 COMMENT ON DATABASE warehouse IS 'Хранилище: сырой слой и витрины';
-COMMENT ON DATABASE airflow_meta IS 'Метабаза Airflow, появится в работе на этапе 4';
+COMMENT ON DATABASE airflow_meta IS 'Метабаза Airflow: состояние планировщика и история прогонов';
