@@ -12,10 +12,16 @@ data/
 *.parquet
 *.xlsx
 
-# Airflow
+# Airflow. Конфиг не коммитится намеренно: airflow.cfg генерируется сам, в нем
+# больше ста килобайт чужих умолчаний, и объяснить их нельзя. Все, что нужно
+# этому проекту, задается пятью переменными окружения в Makefile.
+airflow/airflow.cfg
 airflow/logs/
-airflow/airflow.db
-airflow/airflow-webserver.pid
+airflow/alerts.log
+airflow/.db-migrated
+airflow/*.db
+airflow/*.pid
+airflow/*.generated
 airflow/standalone_admin_password.txt
 
 # dbt
