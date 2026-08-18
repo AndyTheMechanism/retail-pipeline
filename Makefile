@@ -65,12 +65,19 @@ AIRFLOW_DB_STAMP := $(CURDIR)/airflow/.db-migrated
 
 # Airflow настраивается переменными окружения, а не файлом. Свой airflow.cfg он
 # сгенерирует сам - в нем больше ста килобайт чужих умолчаний, и объяснить их
-# нельзя. Здесь пять строк, и каждая объяснима за минуту.
+# нельзя. Здесь шесть строк, и каждая объяснима за минуту.
 AIRFLOW_HOME := $(CURDIR)/airflow
 AIRFLOW__DATABASE__SQL_ALCHEMY_CONN := postgresql+psycopg2://$(DB_USER):$(DB_PASSWORD)@127.0.0.1:$(DB_PORT)/airflow_meta
 AIRFLOW__CORE__DAGS_FOLDER := $(CURDIR)/airflow/dags
 AIRFLOW__CORE__LOAD_EXAMPLES := False
 AIRFLOW__CORE__EXECUTOR := LocalExecutor
+
+# То же решение, что у Postgres в docker-compose.yml, и по той же причине.
+# Умолчание Airflow - 0.0.0.0, то есть интерфейс виден всей сети. При этом
+# standalone заводит пользователя admin с паролем в открытом виде и сам об этом
+# предупреждает. Держать такое доступным с чужого Wi-Fi незачем: смотрит на него
+# один человек с этой же машины.
+AIRFLOW__API__HOST := 127.0.0.1
 
 # Голый export отдает все переменные выше дочерним процессам: генератору, dbt и
 # Airflow. Файл .env при этом необязателен - умолчания совпадают с
@@ -200,8 +207,15 @@ $(AIRFLOW_DB_STAMP): $(AIRFLOW_VENV)
 
 airflow-init: up $(AIRFLOW_DB_STAMP) ## Создать метабазу Airflow
 
+# PATH здесь не для удобства. standalone поднимает планировщик, веб-сервер,
+# обработчик DAG-файлов и triggerer подпроцессами и зовет их коротким именем
+# `airflow`, то есть ищет по PATH. Makefile зовет бинарь по пути внутри venv -
+# самому процессу этого хватает, а его детям нет: все четыре падают с
+# "No such file or directory: 'airflow'", и выглядит это так, будто Airflow не
+# установлен. Глобально PATH не правится намеренно: у остальных целей свои
+# окружения, и питон Airflow не должен оказаться впереди чужого.
 airflow: up $(AIRFLOW_DB_STAMP) ## Поднять веб-интерфейс Airflow на localhost:8080
-	$(AIRFLOW) standalone
+	PATH="$(CURDIR)/$(AIRFLOW_VENV)/bin:$$PATH" $(AIRFLOW) standalone
 
 $(CHECKS_VENV): requirements-checks.txt
 	$(PYTHON) -m venv $(CHECKS_VENV)
