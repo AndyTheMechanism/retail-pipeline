@@ -56,11 +56,16 @@ one. Each step builds its own virtual environment. On Windows, run it under WSL2
 
 ## The layers
 
-![dbt lineage: 21 objects from six sources to five marts](images/dbt-lineage.png)
+![Everything the sales mart is built from](images/dbt-lineage.png)
 
 Three layers, one directory each. `staging` fixes the shape and nothing else;
 `intermediate` brings sources together; `marts` hands out the numbers. The
 database schemas carry the same names.
+
+Above is everything the sales mart is built from — the raw layer on the left,
+the returns arriving on their own branch, the calendar spine feeding the grain.
+That is a filtered view; `make docs` opens the whole graph, all 21 objects of
+it.
 
 The fact marts take their grain from a calendar rather than from the data —
 store by day from the store's opening date, exactly 62,690 rows. A day when nothing
