@@ -87,6 +87,15 @@ how many source rows there were.
 
 ## Stop and flag
 
+A run is four tasks: fetch the raw data for a date, check it arrived, build the
+marts behind the gate, announce what was published.
+
+```
+land_partition → check_freshness → build_marts → publish
+                        │                │
+                       stop             stop
+```
+
 ![The chain stopped on freshness; the two tasks below it never ran](images/airflow-chain-stopped.png)
 
 A pipeline that falls over at every defect is as useless as one that never falls
@@ -246,6 +255,18 @@ external system.
 | [`DICTIONARY.md`](DICTIONARY.md) | What every table and column means — generated, not written |
 | [`QUERY-PLAN.md`](QUERY-PLAN.md) | One heavy query taken apart, with plans before and after |
 | [`INCIDENTS.md`](INCIDENTS.md) | What broke, what it looked like from outside, and what to do |
+
+And the code, in the order the data moves through it:
+
+| Directory | What lives there |
+|---|---|
+| `generator/` | Makes the synthetic data and plants the five defects |
+| `db/` | The raw schema, and the only DDL written by hand |
+| `dbt/` | 14 models in three layers, 93 tests, macros, the snapshot |
+| `airflow/` | The DAG and the alert callback — four tasks, no more |
+| `checks/` | The reconciliation, in pandas rather than SQL on purpose |
+| `scenarios/` | The three demos, each able to fail |
+| `docs/` | Builds `DICTIONARY.md` out of the yml descriptions |
 
 `INCIDENTS.md` has two halves. The first is the incidents the pipeline exists to
 handle. The second is the ones the project hit while being built — a check that
