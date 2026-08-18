@@ -1,36 +1,41 @@
--- Свежесть источника: партиция за целевую дату приехала и непуста.
+-- Source freshness: the partition for the target date arrived and is not empty.
 --
--- Мерится относительно ЦЕЛЕВОЙ ДАТЫ ПРОГОНА, а не настенных часов. Горизонт
--- данных фиксирован и кончается в прошлом, поэтому проверка "свежо
--- относительно сегодня" была бы красной всегда и справедливо - а выключенный
--- гейт хуже отсутствующего.
+-- Measured against the TARGET RUN DATE, not against the wall clock. The data
+-- horizon is fixed and ends in the past, so a "fresh as of today" check would
+-- be red always and rightly so — and a disabled gate is worse than an absent
+-- one.
 --
--- В обычной работе дату передает планировщик - DAG подставляет ее в --vars, и
--- тогда она внешняя по-настоящему. Руками ее можно задать так:
+-- In normal operation the scheduler passes the date in — the DAG substitutes
+-- it into --vars, and then it is genuinely external. By hand it is set like
+-- this:
 --
 --     make test VARS='{run_date: 2025-02-26}'
 --
--- Два слабых места называю вслух, потому что они есть.
+-- Two weak spots, named out loud because they are there.
 --
--- Первое. Если run_date не передан, дата берется из самих данных, и такая
--- проверка не заметит, что не приехал весь хвост сразу: максимум просто
--- окажется вчерашним. Ослабляет это то, что максимум берется по двум
--- источникам разом - если заказы за последний день не пришли, а трафик пришел,
--- дата придет из трафика и проверка сработает.
+-- First. If run_date is not passed, the date is taken from the data itself, and
+-- a check like that will not notice that the whole tail failed to arrive: the
+-- maximum will simply turn out to be yesterday's. One thing softens it: the
+-- maximum is taken across two sources at once — if the orders for the last day
+-- did not arrive but the traffic did, the date comes from traffic and the
+-- check fires.
 --
--- Второе, и оно серьезнее. Проверяется НАЛИЧИЕ партиции, а не ее полнота:
--- день, приехавший наполовину, гейт пройдет и опубликуется заниженным числом.
--- Сверка чека с сырьем этого тоже не поймает - она сравнивает модель с тем же
--- неполным сырьем и честно сойдется. Закрыть дыру можно сравнением числа строк
--- за дату с медианой по соседним дням; здесь этого нет, и знать об этом надо
--- до того, как на гейт понадеются.
+-- Second, and this one is more serious. What is checked is that the partition
+-- IS THERE, not that it is complete: a day that arrived half full passes the
+-- gate and gets published as an understated number. Reconciling the order lines
+-- against the raw layer will not catch it either — it compares the model with
+-- the same incomplete raw data and honestly agrees. The hole can be closed by
+-- comparing the row count for a date against the median of the neighbouring
+-- days; that is not done here, and it has to be known before anyone leans on
+-- the gate.
 --
--- Тест стоит на источнике, а не на модели, намеренно: свежесть - свойство
--- того, что приехало, и падать она должна раньше, чем что-либо соберется.
--- Механика стопа при этом не очевидна и стоит фразы: dbt build достраивает
--- ребра от теста к потомкам проверяемого узла, поэтому упавшая свежесть
--- пропускает спайн, обе витрины и снимок. Слой staging при этом соберется -
--- он безвреден, это представления над тем же сырьем.
+-- The test sits on the source rather than on a model, deliberately: freshness
+-- is a property of what arrived, and it has to fail before anything gets built.
+-- The mechanics of the stop are not obvious, though, and are worth a sentence:
+-- dbt build adds edges from a test to the children of the node it checks, so a
+-- failed freshness check takes the spine, both marts and the snapshot down
+-- with it. The staging layer still builds — harmless, those are views over the
+-- same raw data.
 
 with target as (
     select

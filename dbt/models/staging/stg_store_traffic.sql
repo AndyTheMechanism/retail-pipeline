@@ -1,10 +1,11 @@
--- Дневной трафик точек - знаменатель конверсии.
+-- Daily footfall per store — the denominator of conversion.
 --
--- Ноль посетителей здесь намеренно не приводится к null. Сырой слой сообщает
--- ровно то, что сообщил прибор, а суждение "прибор не считал" выносится в
--- витрине, где рядом видны чеки: ноль посетителей при живых чеках и ноль
--- посетителей в закрытый день - разные вещи, и различить их можно только там,
--- где обе цифры уже сведены.
+-- Zero visitors is deliberately not turned into a null here. The raw layer
+-- carries exactly what the device reported, and the judgement "the device was
+-- not counting" is made in the mart, where the orders sit alongside: zero
+-- visitors with live orders and zero visitors on a closed day are different
+-- things, and they can only be told apart where both figures have been brought
+-- together.
 
 with source as (
     select * from {{ source('raw', 'store_traffic') }}

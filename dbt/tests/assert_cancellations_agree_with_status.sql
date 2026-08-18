@@ -1,37 +1,39 @@
--- Отмены и статусы заказов согласованы в обе стороны.
+-- Cancellations and order statuses agree in both directions.
 --
--- Источник сообщает про отмену дважды: статусом в самом заказе и отдельной
--- строкой в таблице отмен, которая приезжает на день-два позже. Два
--- представления одного факта - это всегда место, где они разойдутся, и
--- разойтись они могут в обе стороны:
+-- The source reports a cancellation twice: as a status on the order itself, and
+-- as a separate row in the cancellations table that arrives a day or two later.
+-- One fact represented twice is always a place where the two will diverge, and
+-- they can diverge in either direction:
 --
---   заказ отменен, а строки отмены нет  - отмена потерялась по дороге;
---   строка отмены есть, а заказ живой   - отмена приехала, а статус не обновили.
+--   order cancelled, no cancellation row  — it was lost on the way;
+--   cancellation row, order still live    — it arrived, the status never moved.
 --
--- Второй случай опаснее первого: заказ с потерянным статусом продолжает
--- считаться выручкой.
+-- The second case is the dangerous one: an order whose status went missing
+-- keeps being counted as revenue.
 --
--- ПРО ГРАНИЦУ ГОРИЗОНТА, и это главное в этом файле.
+-- ABOUT THE EDGE OF THE HORIZON, and that is the main thing in this file.
 --
--- Первая проверка ограничена по датам, вторая нет, и разница не произвольная.
--- Отмена приезжает на 0-2 дня позже заказа, поэтому у заказов последних двух
--- дней горизонта строки отмены может еще не быть - не потому, что она
--- потерялась, а потому, что ее время не пришло. На этих данных так и есть: 56
--- заказов 29 и 30 июня отменены статусом, а строк отмены за них нет, потому
--- что их дата вышла за конец горизонта и генератор их отбросил.
+-- The first check is bounded by dates, the second is not, and the difference is
+-- not arbitrary. A cancellation arrives 0-2 days after its order, so orders
+-- from the last two days of the horizon may not have a cancellation row yet —
+-- not because it was lost, but because its time has not come. On this data that
+-- is exactly the case: 56 orders on 29 and 30 June are cancelled by status and
+-- carry no cancellation row, because that row's date fell past the end of the
+-- horizon and the generator dropped it.
 --
--- Первая версия теста этого не учитывала и падала на ровном месте. Вывод общий
--- и стоит запомнить: проверка, которая сравнивает два источника с разной
--- задержкой, обязана быть ограничена по датам на глубину этой задержки. Иначе
--- она красная всегда, ее выключают, и гейта больше нет.
+-- The first version of this test did not account for that and went red on data
+-- that was perfectly fine. The lesson generalises and is worth keeping: a check
+-- that compares two sources with different delays must be bounded by dates to
+-- the depth of that delay. Otherwise it is red always, someone switches it off,
+-- and there is no gate any more.
 --
--- Обратная сторона в границе не нуждается: строка отмены при живом заказе -
--- это рассинхрон в любой день, включая последний.
+-- The other direction needs no bound: a cancellation row against a live order
+-- is a desync on any day, the last one included.
 
 {% set cancellation_delay_days = var('cancellation_delay_days', 2) %}
 
 with settled as (
-    -- Дата, до которой окно приезда отмен уже закрылось.
+    -- The date up to which the arrival window for cancellations has closed.
     select max(order_date) - {{ cancellation_delay_days }} as last_settled_date
     from {{ ref('stg_orders') }}
 ),

@@ -1,16 +1,19 @@
-# Профиль лежит в репозитории намеренно.
+# The profile sits in the repository on purpose.
 #
-# Обычно profiles.yml держат в ~/.dbt и не коммитят - потому что там пароли от
-# боевого хранилища. Здесь хранилище одно: локальный контейнер, который слушает
-# только 127.0.0.1, и пароль в нем тривиальный по той же причине, по которой он
-# тривиален в docker-compose.yml, - чтобы проект заводился без настройки.
+# Normally profiles.yml is kept in ~/.dbt and never committed — because it holds
+# the passwords to a production warehouse. Here there is one warehouse: a local
+# container listening on 127.0.0.1 only, and the password in it is trivial for
+# the same reason it is trivial in docker-compose.yml — so that the project
+# starts with no configuration.
 #
-# Секретов тут нет и появиться неоткуда: все значения читаются из окружения, а
-# умолчания совпадают с docker-compose.yml и Makefile. Если база не локальная -
-# переменные окружения перебивают, файл править не надо.
+# There are no secrets here and nowhere for them to come from: every value is
+# read from the environment, and the defaults match docker-compose.yml and the
+# Makefile. If the database is not local, environment variables override the
+# defaults and the file needs no editing.
 #
-# Makefile выставляет DBT_PROFILES_DIR на этот каталог. Без него dbt пошел бы
-# искать профиль в ~/.dbt и нашел бы там чужой, от другого проекта.
+# The Makefile points DBT_PROFILES_DIR at this directory. Without it dbt would
+# go looking for a profile in ~/.dbt and find someone else's, left over from
+# another project.
 
 retail_pipeline:
   target: dev
@@ -22,7 +25,7 @@ retail_pipeline:
       user: "{{ env_var('POSTGRES_USER', 'pipeline') }}"
       password: "{{ env_var('POSTGRES_PASSWORD', 'pipeline') }}"
       dbname: "{{ env_var('POSTGRES_DB', 'warehouse') }}"
-      # Запасная схема: сюда попадет модель, у которой не объявлена своя.
-      # Реально своя есть у каждой папки - см. macros/generate_schema_name.sql.
+      # Fallback schema: a model with no schema of its own would land here.
+      # Every directory does declare one — see macros/generate_schema_name.sql.
       schema: analytics
       threads: 4

@@ -1,150 +1,157 @@
 version: 2
 
-# Тесты на витринах устроены иначе, чем выше по графу, и это надо знать.
+# Tests on the marts work differently from the ones higher up the graph, and
+# that is worth knowing.
 #
-# Тест в dbt выполняется после того, как его модель собрана. Значит тест на
-# витрине падает, когда неверная витрина уже лежит в базе, - остановить ее
-# появление он не может по устройству инструмента. Поэтому все, что обязано не
-# пустить битое число в витрину, стоит выше: сверка с сырьем и ссылочная
-# целостность сидят на промежуточном слое, и упавший там тест просто не дает
-# витринам собраться.
+# A dbt test runs after its model has been built. So a test on a mart fails once
+# the wrong mart is already in the database — by the design of the tool it
+# cannot stop that mart from appearing. Everything that has to keep a broken
+# number out of a mart therefore sits higher up: the reconciliation against the
+# raw layer and referential integrity live on the intermediate layer, and a test
+# failing there simply does not let the marts be built.
 #
-# Здесь остаются проверки формы - зерно и ключи. Они дешевые, и их падение
-# означает не "витрину нельзя публиковать", а "витрина сломана, разбираться
-# надо сейчас".
+# What is left here are shape checks — the grain and the keys. They are cheap,
+# and their failure means not "the mart cannot be published" but "the mart is
+# broken, and it needs looking at now".
 
 models:
   - name: mart_store_daily_sales
     description: >
-      Продажи по магазину и дню. Зерно - (store_id, order_date), 62 690 строк
-      по спайну. Возврат отнесен к дате заказа, поэтому вчерашнее число может
-      измениться - в этом и предмет проекта.
+      Sales per store and day. Grain — (store_id, order_date), 62,690 rows
+      along the spine. A return is attributed to the order date, so yesterday's
+      number can change — and that is the subject of the project.
     data_tests:
       - unique_grain:
           arguments:
             columns: [store_id, order_date]
     columns:
       - name: store_id
-        description: Магазин. Часть зерна.
+        description: The store. Part of the grain.
         data_tests: [not_null]
       - name: order_date
         description: >
-          День покупки. Часть зерна. Возвраты относятся именно к нему, а не ко
-          дню своего приезда, и поэтому строка может быть переписана позже.
+          The day of purchase. Part of the grain. Returns are attributed to it
+          rather than to the day they arrive, which is why the row can be
+          rewritten later.
         data_tests: [not_null]
       - name: has_orders
         description: >
-          Приехали ли заказы за этот день. Для открытого магазина это норма;
-          ложь по всей сети в один день означает непришедшую партицию.
+          Whether orders arrived for this day. For an open store that is the
+          norm; false across the whole network on one day means a partition that
+          did not arrive.
         data_tests: [not_null]
       - name: orders_count
-        description: Заказы без отмененных, по шапкам, а не по позициям.
+        description: Orders excluding cancelled ones, counted by header rather than by line.
       - name: orders_cancelled_count
         description: >
-          Отмененные заказы. Вынесены отдельно, а не выброшены: день, где
-          половина заказов отменилась, обязан отличаться от дня без заказов.
+          Cancelled orders. Kept apart rather than thrown away: a day where half
+          the orders were cancelled has to look different from a day with no
+          orders at all.
       - name: lines_count
-        description: Позиции в неотмененных заказах, уже после дедупликации.
+        description: Lines in non-cancelled orders, already deduplicated.
       - name: units_sold
-        description: Проданные штуки в неотмененных заказах.
+        description: Units sold in non-cancelled orders.
       - name: revenue_gross
         description: >
-          Выручка по неотмененным заказам. Null, если данные за день не
-          приехали - ноль ставится только там, где было что считать.
+          Revenue over non-cancelled orders. Null if the data for the day did
+          not arrive — a zero is written only where there was something to
+          count.
       - name: returns_amount
         description: >
-          Возвраты, отнесенные к дате заказа. Именно они двигают вчерашнее
-          число, и ради них существует окно пересчета.
+          Returns attributed to the order date. These are what move yesterday's
+          number, and the reprocessing window exists for them.
       - name: returns_arrived_amount
         description: >
-          Возвраты, приехавшие в этот день к заказам любых дат. В выручке не
-          участвует; нужна, чтобы было видно, откуда взялось изменение прошлого.
+          Returns that arrived on this day against orders of any date. It takes
+          no part in revenue; it is here so you can see where a change to the
+          past came from.
         data_tests: [not_null, not_negative]
       - name: revenue_net
-        description: Выручка за вычетом возвратов, отнесенных к дате заказа.
+        description: Revenue less the returns attributed to the order date.
 
   - name: mart_store_daily_conversion
     description: >
-      Конверсия по магазину и дню. Зерно - (store_id, traffic_date), те же
-      62 690 строк. Окна пересчета у этой витрины нет: ни трафик, ни заказы
-      задним числом не переписываются.
+      Conversion per store and day. Grain — (store_id, traffic_date), the same
+      62,690 rows. This mart has no reprocessing window: neither footfall nor
+      orders are rewritten after the fact.
     data_tests:
       - unique_grain:
           arguments:
             columns: [store_id, traffic_date]
     columns:
       - name: store_id
-        description: Магазин. Часть зерна.
+        description: The store. Part of the grain.
         data_tests: [not_null]
       - name: traffic_date
-        description: День наблюдения. Часть зерна.
+        description: The day of observation. Part of the grain.
         data_tests: [not_null]
       - name: has_traffic
-        description: Приехал ли трафик за этот день. Ложь означает непришедшую партицию.
+        description: Whether footfall arrived for this day. False means a partition that did not arrive.
         data_tests: [not_null]
       - name: has_orders
-        description: Приехали ли заказы за этот день.
+        description: Whether orders arrived for this day.
       - name: visitors
-        description: Посетители по дверному счетчику. Null, если трафик за день не приехал.
+        description: Visitors as counted by the door counter. Null if no footfall arrived for the day.
         data_tests: [not_negative]
       - name: orders_offline
         description: >
-          Чеки: офлайн-заказы без отмененных. Сайт и приложение не входят -
-          дверной счетчик их не видит.
+          The numerator of conversion: offline orders excluding cancelled ones.
+          Web and app are left out — the door counter does not see them.
         data_tests: [not_negative]
       - name: conversion
         description: >
-          Чеки на посетителя. Null, если нет трафика, нет заказов или
-          посетителей ноль: ноль посетителей при живых чеках - это сообщение о
-          сломанном приборе, а не значение. Порог качества здесь не
-          применяется - его выносит флаг.
+          Orders per visitor. Null when there is no footfall, no orders, or the
+          visitor count is zero: zero visitors alongside real orders is a
+          message about a broken device, not a value. The quality threshold is
+          not applied here — that judgement is passed by a flag.
 
   - name: mart_store_daily_sales_trend
     description: >
-      Недельный фон выручки поверх витрины продаж. Отдельная модель, потому что
-      скользящее окно перетягивает соседние строки, а витрина продаж
-      инкрементальная.
+      A weekly revenue baseline on top of the sales mart. A model of its own,
+      because a rolling window pulls in neighbouring rows while the sales mart
+      is incremental.
     data_tests:
       - unique_grain:
           arguments:
             columns: [store_id, order_date]
     columns:
       - name: store_id
-        description: Магазин. Часть зерна.
+        description: The store. Part of the grain.
         data_tests: [not_null]
       - name: order_date
-        description: День покупки. Часть зерна.
+        description: The day of purchase. Part of the grain.
         data_tests: [not_null]
       - name: revenue_net
-        description: Чистая выручка дня, перенесена из витрины продаж для удобства чтения.
+        description: Net revenue for the day, carried over from the sales mart for ease of reading.
       - name: revenue_net_avg_7d
         description: >
-          Скользящее среднее чистой выручки за 7 дней. Пусто, если в окне есть
-          день без данных: avg пропустил бы null и поделил на меньшее число
-          дней, то есть подменил бы пропуск оценкой.
+          A 7-day rolling average of net revenue. Empty if the window contains a
+          day without data: avg would skip the null and divide by fewer days,
+          which is to say it would replace a gap with an estimate.
 
   - name: mart_store_daily_quality
     description: >
-      Флаги качества: что в этот день у этого магазина считать нельзя. Зерно -
-      (store_id, flag_date, check_name). Отдельная таблица, а не колонки в
-      витринах: флагов бывает несколько на строку, они добавляются со временем,
-      и строкой это растет естественно, а колонкой - нет.
+      Quality flags: what cannot be counted for this store on this day. Grain —
+      (store_id, flag_date, check_name). A table of its own rather than columns
+      on the marts: a row can carry several flags, and more get added over
+      time — as rows that grows naturally, as columns it does not.
     data_tests:
       - unique_grain:
           arguments:
             columns: [store_id, flag_date, check_name]
     columns:
       - name: store_id
-        description: Магазин, к которому относится флаг.
+        description: The store the flag belongs to.
         data_tests: [not_null]
       - name: flag_date
-        description: День, к которому относится флаг. Часть зерна.
+        description: The day the flag belongs to. Part of the grain.
         data_tests: [not_null]
       - name: check_name
         description: >
-          Имя проверки. Английское, потому что по нему фильтруют и джойнят.
-          Список закрытый: новый флаг добавляется осознанно, вместе с правкой
-          этого теста, а не приезжает опечаткой.
+          The name of the check. Machine-readable, because this is the column
+          people filter and join on. The list is closed: a new flag is added
+          deliberately, together with an edit to this test, rather than arriving
+          as a typo.
         data_tests:
           - not_null
           - accepted_values:
@@ -155,60 +162,60 @@ models:
                   - orders_partition_missing
                   - traffic_partition_missing
       - name: reason
-        description: Причина по-русски - ее читает человек в отчете, а не машина.
+        description: The reason in prose — a human reads it in a report, not a machine.
         data_tests: [not_null]
       - name: measured_value
-        description: Число, из-за которого флаг сработал.
+        description: The number that made the flag fire.
       - name: threshold_value
-        description: Порог, с которым сравнивали. Пусто там, где сравнения не было.
+        description: The threshold it was compared against. Empty where there was no comparison.
 
   - name: mart_store_daily_revisions
     description: >
-      Журнал ревизий: какое опубликованное число изменилось, когда и почему.
-      Ядро проекта. Строка появляется только у той пары "магазин и день", чье
-      число действительно поехало; первая версия ревизией не считается.
-      Представление поверх снимка ops.snap_store_daily_sales.
+      The revision log: which published number changed, when and why. The core
+      of the project. A row appears only for the store-and-day pair whose number
+      actually moved; the first version does not count as a revision. A view
+      over the ops.snap_store_daily_sales snapshot.
     data_tests:
       - unique_grain:
           arguments:
             columns: [store_id, order_date, version_no]
     columns:
       - name: store_id
-        description: Магазин, чье число пересчиталось.
+        description: The store whose number was recomputed.
         data_tests: [not_null]
       - name: order_date
-        description: День, за который изменилось число, а не день пересчета.
+        description: The day whose number changed, not the day of the recomputation.
         data_tests: [not_null]
       - name: revised_at
-        description: Когда пересчет это изменение внес.
+        description: When the recomputation made that change.
         data_tests: [not_null]
       - name: version_no
         description: >
-          Номер версии значения. Всегда больше единицы: первая версия - это не
-          изменение, а первое появление числа.
+          The version number of the value. Always greater than one: the first
+          version is not a change but the first appearance of the number.
         data_tests: [not_null]
       - name: revenue_net_was
-        description: Что было опубликовано до пересчета.
+        description: What was published before the recomputation.
       - name: revenue_net_became
-        description: Что опубликовано после.
+        description: What was published after it.
       - name: revenue_net_delta
-        description: Насколько сдвинулось. Отрицательное - число уменьшилось.
+        description: How far it moved. Negative means the number went down.
       - name: returns_amount_was
-        description: Возвраты, отнесенные к этому дню, до пересчета.
+        description: Returns attributed to this day, before the recomputation.
       - name: returns_amount_became
-        description: Они же после. Разница с предыдущей колонкой обычно и есть вся ревизия.
+        description: The same after it. The difference from the previous column is usually the whole revision.
       - name: reason
         description: >
-          Причина не угадывается, а выводится из того, какие величины разошлись.
-          Возвраты изменились при неизменном брутто - поздний возврат, штатная
-          жизнь домена. Изменилось брутто - пересобрано сырье, и это уже повод
-          посмотреть, почему.
+          The reason is not guessed but derived from which quantities diverged.
+          Returns changed while gross stayed put — a late return, ordinary life
+          in this domain. Gross changed — the raw layer was rebuilt, and that
+          one is worth looking into.
         data_tests:
           - not_null
           - accepted_values:
               arguments:
                 values:
-                  - поздний возврат
-                  - пересобрано сырье
-                  - изменился состав заказов
-                  - прочее
+                  - late return
+                  - raw layer rebuilt
+                  - order mix changed
+                  - other

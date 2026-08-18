@@ -1,19 +1,21 @@
-# Проект dbt: из сырого слоя в витрины.
+# The dbt project: from the raw layer to the marts.
 #
-# Четырнадцать моделей в трех слоях, снимок витрины продаж и девяносто с лишним
-# проверок. Что где лежит - в DICTIONARY.md, почему так решено - в README.
+# Fourteen models in three layers, a snapshot of the sales mart and ninety-odd
+# checks. What lives where is in DICTIONARY.md, why it was decided this way is
+# in the README.
 #
-# Две вещи, которые стоит знать до чтения моделей.
+# Two things worth knowing before reading the models.
 #
-# Витрина продаж инкрементальная и пересобирает окно назад, потому что возврат
-# приезжает позже покупки и меняет выручку прошлого. У витрины конверсии окна
-# нет вовсе: ни трафик, ни заказы задним числом не переписываются. Окно - это
-# свойство конкретной витрины, а не общая настройка пайплайна.
+# The sales mart is incremental and rebuilds a window backwards, because a
+# return arrives later than the purchase and changes the revenue of an earlier
+# day. The conversion mart has no window at all: neither traffic nor orders are
+# rewritten after the fact. The window is a property of a particular mart, not a
+# pipeline-wide setting.
 #
-# Проверки живут в двух местах: штатные - ключом data_tests в yml рядом с
-# колонкой, свои - отдельными запросами в tests/. Разделение "стоп против
-# флага" описано в README; здесь важно, что флаги - это не тесты, а модель
-# mart_store_daily_quality.
+# Checks live in two places: the built-in ones under the data_tests key in yml
+# next to the column, the custom ones as separate queries in tests/. The split
+# between a stop and a flag is described in the README; what matters here is
+# that flags are not tests but the mart_store_daily_quality model.
 
 name: retail_pipeline
 version: 1.0.0
@@ -21,52 +23,56 @@ config-version: 2
 
 profile: retail_pipeline
 
-# Несовпадение версии должно падать сразу и понятно, а не проявляться странным
-# поведением через полчаса. Почему именно 1.12 - в requirements-dbt.txt.
+# A version mismatch has to fail at once and legibly, rather than show up as
+# strange behaviour half an hour later. Why 1.12 exactly — in
+# requirements-dbt.txt.
 require-dbt-version: [">=1.12.0", "<1.13.0"]
 
 flags:
-  # Один сетевой вызов на каждый прогон, которого проверяющий не просил.
+  # One network call per run that nobody reviewing this asked for.
   send_anonymous_usage_stats: false
 
 vars:
-  # Окно пересчета: на сколько дней назад ежедневный прогон пересобирает
-  # витрину продаж. Число живет здесь одно на весь проект - его читают и
-  # витрина, и флаг "возврат вне окна", и DAG его не переопределяет.
+  # The reprocessing window: how many days back a daily run rebuilds the sales
+  # mart. The number lives here once for the whole project — the mart reads it,
+  # the "return outside the window" flag reads it, and the DAG does not override
+  # it.
   #
-  # 28 дней - это 99-й перцентиль наблюдаемой задержки возврата. Замер по
-  # 136 116 возвратам: медиана 2 дня, 95-й перцентиль 19, 99-й 28, максимум 30.
-  # Позже 28 дней приезжает 0,78% возвратов на 2,6 млн рублей - 0,72% всех
-  # возвратов и 0,025% выручки брутто. Для сравнения: окно в 21 день оставляет
-  # снаружи 3,47% на 12,6 млн, окно в 14 дней - 10,5% на 38,5 млн.
+  # 28 days is the 99th percentile of the observed return delay. Measured across
+  # 136,116 returns: the median is 2 days, the 95th percentile 19, the 99th 28,
+  # the maximum 30. 0.78% of returns arrive later than 28 days, worth 2.6M
+  # rubles — 0.72% of all returns and 0.025% of gross revenue. For comparison: a
+  # 21-day window leaves 3.47% outside, worth 12.6M; a 14-day window leaves
+  # 10.5%, worth 38.5M.
   #
-  # Почему не 30, хотя максимум в данных ровно 30. Взять наблюдаемый максимум
-  # значит подогнать окно под выборку и сделать вид, что хвост ограничен. Он не
-  # ограничен: следующий возврат может приехать на 31-й день, и окно, равное
-  # максимуму, об этом промолчит. На 28 днях остаток ловит флаг
-  # return_outside_window, и расширять окно можно по его показаниям, а не по
-  # квартальной сверке.
+  # Why not 30, when the maximum in the data is exactly 30. Taking the observed
+  # maximum means fitting the window to the sample and pretending the tail is
+  # bounded. It is not: the next return may arrive on day 31, and a window equal
+  # to the maximum will say nothing about it. At 28 days the remainder is caught
+  # by the return_outside_window flag, and the window can be widened on its
+  # evidence rather than on a quarterly reconciliation.
   return_window_days: 28
 
-  # Глубина сверки собранного чека с сырьем в ежедневном прогоне.
+  # How far back the daily run reconciles the assembled order lines against the
+  # raw layer.
   reconcile_days: 30
 
 models:
   retail_pipeline:
-    # Материализация по умолчанию задается папкой: view там, где только
-    # переименование и приведение типов, table там, где джойн и оконная
-    # сортировка, которые иначе выполнялись бы заново при каждом обращении.
+    # The default materialisation is set by the directory: view where there is
+    # nothing but renaming and type casting, table where there is a join and a
+    # window sort that would otherwise be redone on every query.
     #
-    # Отступают от умолчания четыре модели, и у каждой отступление куплено
-    # замером, а не вкусом:
+    # Four models depart from the default, and every departure was bought with a
+    # measurement rather than with taste:
     #
-    #   int_order_lines             incremental - см. QUERY-PLAN.md, там замер
-    #   mart_store_daily_sales      incremental, окно 28 дней назад
-    #   mart_store_daily_conversion incremental, ровно целевая дата
-    #   mart_store_daily_revisions  view - это отчет поверх снимка, не витрина
+    #   int_order_lines             incremental — measured, see QUERY-PLAN.md
+    #   mart_store_daily_sales      incremental, a 28-day window backwards
+    #   mart_store_daily_conversion incremental, exactly the target date
+    #   mart_store_daily_revisions  view — a report over a snapshot, not a mart
     #
-    # Правило поэтому звучит так: папка задает умолчание, модель отступает от
-    # него только там, где может показать, что отступление окупается.
+    # So the rule reads like this: the directory sets the default, and a model
+    # departs from it only where it can show that the departure pays for itself.
     staging:
       +materialized: view
       +schema: staging

@@ -1,21 +1,22 @@
--- Журнал ревизий: какое опубликованное число изменилось, когда и почему.
+-- The revision log: which published number changed, when and why.
 --
--- Ядро проекта. Тезис работодателя - "витрина обновилась молча и неправильно";
--- ответ проекта - "витрина обновилась, и вот строка, которая говорит, что было,
--- что стало и из-за чего". Все остальное в репозитории обслуживает эту таблицу.
+-- The core of the project. The employer's complaint is "the mart updated
+-- silently and wrongly"; the project's answer is "the mart updated, and here is
+-- the row saying what it was, what it became and why". Everything else in the
+-- repository serves this table.
 --
--- Строка появляется только у той пары "магазин и день", чье опубликованное
--- число действительно поехало. Первая версия ревизией не считается: она не
--- изменение, а первое появление числа.
+-- A row appears only for the store-and-day pair whose published number actually
+-- moved. The first version does not count as a revision: it is not a change but
+-- the first appearance of a number.
 --
--- Причина не угадывается, а выводится из того, какие величины разошлись.
--- Возвраты изменились при неизменном брутто - приехал поздний возврат, и это
--- штатная жизнь домена. Изменилось брутто - пересобрано сырье, и вот это уже
--- повод посмотреть, почему.
+-- The reason is not guessed but derived from which quantities diverged. Returns
+-- changed while gross stayed put — a late return arrived, which is ordinary
+-- life in this domain. Gross changed — the raw layer was rebuilt, and that one
+-- is worth looking into.
 --
--- Представление, а не таблица: это отчет поверх снимка, а не витрина. Считать
--- его заранее незачем, а лишняя материализация создала бы второе место, где
--- журнал может отстать от истории.
+-- A view, not a table: this is a report over the snapshot, not a mart. There is
+-- no point computing it in advance, and a needless materialisation would create
+-- a second place where the log can fall behind the history.
 
 {{ config(materialized = 'view') }}
 
@@ -58,12 +59,12 @@ select
     case
         when returns_amount is distinct from returns_amount_before
          and revenue_gross  is not distinct from revenue_gross_before
-            then 'поздний возврат'
+            then 'late return'
         when revenue_gross is distinct from revenue_gross_before
-            then 'пересобрано сырье'
+            then 'raw layer rebuilt'
         when orders_count is distinct from orders_count_before
-            then 'изменился состав заказов'
-        else 'прочее'
+            then 'order mix changed'
+        else 'other'
     end as reason
 
 from versions

@@ -1,21 +1,21 @@
-# Окружение dbt отдельное от генератора намеренно.
+# The dbt environment is separate from the generator's on purpose.
 #
-# Генератор ходит в базу через psycopg3, а адаптер dbt умеет только psycopg2.
-# Свести оба драйвера в одно окружение можно, но тогда неудачная установка dbt
-# ломает и make seed, - а генератор обязан работать сам по себе. Всего
-# окружений четыре: генератор, dbt, сверка и Airflow. DAG зовет dbt
-# подпроцессом, и интерфейс между ними - код возврата, а не общий
-# site-packages.
+# The generator talks to the database through psycopg3, and the dbt adapter
+# only speaks psycopg2. Both drivers can be brought into one environment, but
+# then a failed dbt install breaks make seed too — and the generator has to
+# work on its own. There are four environments in all: the generator, dbt, the
+# reconciliation and Airflow. The DAG calls dbt as a subprocess, and the
+# interface between them is an exit code, not a shared site-packages.
 
-# Нижняя граница здесь важнее верхней, и это редкий случай - обычно пин держат
-# сверху, чтобы не приехало ломающее обновление.
+# The lower bound matters more than the upper one here, which is unusual — a pin
+# is normally held from above, to keep a breaking update out.
 #
-# dbt-core 1.11 встает на Python 3.14 без единой ошибки, а потом падает на
-# первой же команде: он пинит mashumaro<3.15, а тот на 3.14 не умеет собрать
-# распаковщик и роняет dbt с UnserializableField. Поддержка приехала в
-# mashumaro 3.17, и разрешает его только 1.12.
+# dbt-core 1.11 installs on Python 3.14 without a single error, then falls over
+# on the first command: it pins mashumaro<3.15, and on 3.14 that cannot build
+# its unpacker and takes dbt down with UnserializableField. Support arrived in
+# mashumaro 3.17, and only 1.12 allows it.
 #
-# Проверено установкой, а не списком поддерживаемых версий: на 1.11.13 падает
-# `dbt --version`, на 1.12.2 проходит.
+# Established by installing, not by reading a list of supported versions: on
+# 1.11.13 `dbt --version` fails, on 1.12.2 it passes.
 dbt-core>=1.12,<1.13
 dbt-postgres>=1.11,<1.12

@@ -1,18 +1,20 @@
-"""Ежедневный прогон розничной воронки.
+"""The daily retail funnel run.
 
-Цепочка ровно та, что в чертеже: забрать сырье за дату, проверить свежесть
-источника, собрать витрины с гейтом, объявить опубликованное. Стоп стоит в двух
-местах - на свежести и на тестах внутри сборки.
+The chain is exactly the one from the blueprint: fetch the raw data for a date,
+check source freshness, build the marts behind the gate, announce what was
+published. It stops in two places — on freshness, and on the tests inside the
+build.
 
-Задачи зовут инструменты подпроцессом, а не импортом. Это не лень: у dbt, у
-генератора и у самого Airflow несовместимые пины, и каждый живет в своем
-окружении. Интерфейс между ними - код возврата, и он не ломается от того, что
-кто-то обновил библиотеку.
+The tasks call the tools as subprocesses rather than importing them. That is
+not laziness: dbt, the generator and Airflow itself have incompatible pins, and
+each lives in its own environment. The interface between them is an exit code,
+and that does not break because somebody upgraded a library.
 
-Дата прогона передается инструментам явно, через переменную окружения, а не
-берется ими из настенных часов. На ней стоит все: и свежесть, и окно пересчета.
-Прогон за прошлый день обязан давать ровно то же, что дал бы тогда, - иначе
-пересчет не пересчет, а новая история.
+The run date is handed to the tools explicitly, through an environment
+variable, rather than read by them off the wall clock. Everything rests on it:
+freshness and the reprocessing window alike. A run for a past day must produce
+exactly what it would have produced then — otherwise it is not reprocessing but
+a new history.
 """
 
 from __future__ import annotations
@@ -24,26 +26,26 @@ import pendulum
 from airflow.providers.standard.operators.bash import BashOperator
 from airflow.sdk import DAG
 
-# Корень проекта от расположения файла, а не из переменной окружения: DAG лежит
-# внутри репозитория, и лишняя настройка тут была бы еще одним местом, где
-# можно ошибиться.
+# The project root comes from the location of this file, not from an
+# environment variable: the DAG lives inside the repository, and one more
+# setting here would be one more place to get it wrong.
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 
 GENERATOR_PY = PROJECT_DIR / ".venv" / "bin" / "python"
 DBT = PROJECT_DIR / ".venv-dbt" / "bin" / "dbt"
 DBT_DIR = PROJECT_DIR / "dbt"
 
-# Размера окна пересчета здесь намеренно НЕТ.
+# The size of the reprocessing window is deliberately NOT in this file.
 #
-# Он живет в переменных dbt/dbt_project.yml, там же его обоснование числами, и
-# DAG его не передает и не переопределяет. Первая версия этого файла заводила
-# свою константу и подставляла ее в --vars - и тем самым перебивала
-# единственный источник правды: правка dbt_project.yml меняла бы поведение
-# make models, но не make run. Ровно то тихое расхождение, от которого проект и
-# защищается.
+# It lives in the vars of dbt/dbt_project.yml, next to the numbers that justify
+# it, and the DAG neither passes it nor overrides it. The first version of this
+# file kept a constant of its own and fed it to --vars — and so overrode the
+# single source of truth: editing dbt_project.yml would have changed what make
+# models does, but not what make run does. Exactly the silent divergence this
+# project defends against.
 #
-# Единственное, что DAG обязан сообщить инструментам, - дату прогона. Все
-# остальное они берут из своих конфигов, лежащих в репозитории.
+# The only thing the DAG has to tell the tools is the run date. Everything else
+# they take from their own configs, which live in the repository.
 ENV = {
     "RUN_DATE": "{{ ds }}",
     "DBT_PROFILES_DIR": str(DBT_DIR),
@@ -51,16 +53,16 @@ ENV = {
 
 
 def alert_on_failure(context) -> None:
-    """Алерт при падении.
+    """Alert on failure.
 
-    Пишет строку в airflow/alerts.log и в лог задачи. В проде на этом месте
-    почта или мессенджер, но интерфейс тот же - функция обратного вызова, и
-    менять придется одну ее. Заводить SMTP в проекте, который должен
-    подниматься одной командой, значило бы требовать настройки там, где ее
-    обещано не требовать.
+    Writes a line into airflow/alerts.log and into the task log. In production
+    this is where email or a messenger goes, but the interface is the same — a
+    callback function, and only it would change. Requiring SMTP in a project
+    that promises to start with one command would mean demanding setup exactly
+    where none was promised.
     """
     ti = context["task_instance"]
-    line = "%s  ПАДЕНИЕ  dag=%s task=%s дата=%s попытка=%s" % (
+    line = "%s  FAILED  dag=%s task=%s date=%s attempt=%s" % (
         pendulum.now("UTC").to_iso8601_string(),
         ti.dag_id,
         ti.task_id,
@@ -76,26 +78,26 @@ def alert_on_failure(context) -> None:
 
 with DAG(
     dag_id="retail_pipeline",
-    description="Ежедневная выручка и конверсия по магазинам",
+    description="Daily revenue and conversion per store",
     schedule="@daily",
     start_date=pendulum.datetime(2025, 1, 1, tz="UTC"),
-    # Горизонт синтетики кончается 30 июня 2026. Без end_date планировщик
-    # каждый день пытался бы считать день, за который источник ничего не
-    # присылал, и честно падал бы на свежести - но падение по расписанию,
-    # которое никто не собирается чинить, это шум, а не сигнал.
+    # The synthetic horizon ends on 30 June 2026. Without an end_date the
+    # scheduler would try every day to compute a day the source never sent
+    # anything for, and would honestly fail on freshness — but a scheduled
+    # failure nobody intends to fix is noise, not signal.
     end_date=pendulum.datetime(2026, 6, 30, tz="UTC"),
     catchup=False,
-    # Окна пересчета соседних дат перекрываются на 28 дней. Два прогона
-    # одновременно писали бы одни и те же строки витрины, и кто из них
-    # последний - вопрос удачи. Пересчет обязан быть повторяемым, поэтому
-    # прогон в проекте ровно один.
+    # The reprocessing windows of neighbouring dates overlap by 28 days. Two
+    # runs at once would write the same mart rows, and which of them lands last
+    # is a matter of luck. Reprocessing has to be repeatable, so this project
+    # allows exactly one run at a time.
     max_active_runs=1,
     default_args={
-        # Ретраев по умолчанию нет, и это осознанно. Повтор помогает от
-        # транзиентной ошибки связи и не помогает ни от чего другого: упавший
-        # тест данных от второго запуска не позеленеет, а три попытки только
-        # утроят время до того, как человек об этом узнает. Ретраи стоят
-        # точечно там, где падение бывает временным.
+        # There are no retries by default, and that is deliberate. A retry
+        # helps against a transient connection error and against nothing else:
+        # a failed data test will not turn green on the second attempt, and
+        # three tries only triple the time before a human hears about it.
+        # Retries sit precisely where a failure can be temporary.
         "retries": 0,
         "on_failure_callback": alert_on_failure,
     },
@@ -103,8 +105,8 @@ with DAG(
     doc_md=__doc__,
 ) as dag:
 
-    # Забор сырья за дату. Единственная задача, ходящая во внешнюю систему, -
-    # и единственная, где ретрай осмыслен.
+    # Landing the raw data for a date. The only task that reaches into an
+    # external system — and the only one where a retry makes sense.
     land_partition = BashOperator(
         task_id="land_partition",
         bash_command=f'"{GENERATOR_PY}" -m generator day "$RUN_DATE"',
@@ -113,14 +115,15 @@ with DAG(
         append_env=True,
         retries=2,
         retry_delay=datetime.timedelta(minutes=1),
-        doc_md="Загрузка партиции за дату через delete-and-insert. Повторный "
-               "вызов дает то же состояние, поэтому ретрай безопасен.",
+        doc_md="Loads the partition for a date with delete-and-insert. A "
+               "repeat call leaves the same state, so a retry is safe.",
     )
 
-    # Свежесть проверяется отдельной задачей до сборки, хотя тот же тест
-    # выполнится и внутри dbt build. Дублирование намеренное: так в интерфейсе
-    # видно, что цепочка встала именно на источнике, а не где-то в середине
-    # сборки, и разбор начинается с правильного места.
+    # Freshness is checked by a task of its own before the build, even though
+    # the same test also runs inside dbt build. The duplication is deliberate:
+    # this way the UI shows that the chain stopped on the source rather than
+    # somewhere in the middle of the build, and the investigation starts in the
+    # right place.
     check_freshness = BashOperator(
         task_id="check_freshness",
         bash_command=(
@@ -131,12 +134,12 @@ with DAG(
         cwd=str(PROJECT_DIR),
         env=ENV,
         append_env=True,
-        doc_md="Стоп. Партиция за целевую дату должна быть на месте и непуста.",
+        doc_md="Stop. The partition for the target date must be there and not empty.",
     )
 
-    # dbt build, а не dbt run плюс dbt test: тесты идут вперемежку с моделями по
-    # графу, и упавший тест на слое ниже не пускает сборку витрин дальше.
-    # Прошлая витрина при этом остается нетронутой.
+    # dbt build, not dbt run plus dbt test: tests are interleaved with models
+    # along the graph, and a failing test on a lower layer does not let the
+    # marts be built. The previous mart stays untouched.
     build_marts = BashOperator(
         task_id="build_marts",
         bash_command=(
@@ -146,22 +149,22 @@ with DAG(
         cwd=str(PROJECT_DIR),
         env=ENV,
         append_env=True,
-        doc_md="Сборка витрин с гейтом. Витрина продаж пересобирается окном "
-               "назад - столько, сколько живет хвост возвратов; размер окна "
-               "задан в dbt_project.yml.",
+        doc_md="Builds the marts behind the gate. The sales mart is rebuilt a "
+               "window backwards — as far back as the tail of returns reaches; "
+               "the window size is set in dbt_project.yml.",
     )
 
-    # Публикация. Витрина уже обновлена - обновилась она ровно потому, что
-    # тесты прошли, - и задача объявляет, что именно опубликовано. Строчка с
-    # числами в логе прогона дороже, чем кажется: по ней потом видно, что
-    # менялось, без похода в базу.
+    # Publishing. The mart is already updated — it updated precisely because
+    # the tests passed — and the task announces what exactly was published. A
+    # line of numbers in the run log is worth more than it looks: later it
+    # shows what changed without a trip to the database.
     publish = BashOperator(
         task_id="publish",
         bash_command=f'"{GENERATOR_PY}" airflow/publish.py "$RUN_DATE"',
         cwd=str(PROJECT_DIR),
         env=ENV,
         append_env=True,
-        doc_md="Что опубликовано за дату: строки, выручка, флаги качества.",
+        doc_md="What was published for the date: rows, revenue, quality flags.",
     )
 
     land_partition >> check_freshness >> build_marts >> publish

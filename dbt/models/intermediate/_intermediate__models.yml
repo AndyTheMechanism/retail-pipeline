@@ -1,109 +1,115 @@
 version: 2
 
-# Здесь стоит самый важный стоп всего проекта - сверка собранного чека с сырьем.
-# Она вынесена отдельным тестом в tests/assert_order_lines_match_raw.sql,
-# потому что идет к источнику напрямую, минуя staging: проверка, построенная на
-# тех же моделях, которые она проверяет, повторила бы их ошибку.
+# The most important stop in the whole project sits here — the reconciliation of
+# the assembled order against the raw layer. It is pulled out into a test of its
+# own, tests/assert_order_lines_match_raw.sql, because it goes to the source
+# directly, bypassing staging: a check built on the very models it checks would
+# repeat their mistake.
 
 models:
   - name: int_order_lines
     description: >
-      Позиция заказа вместе с шапкой. Зерно - (order_id, line_no).
-      Инкрементальная: прогон трогает ровно целевую дату, и это решение принято
-      по замеру плана запроса - см. QUERY-PLAN.md.
+      An order line together with its header. Grain — (order_id, line_no).
+      Incremental: a run touches exactly the target date, and that decision
+      rests on a measurement of the query plan — see QUERY-PLAN.md.
     data_tests:
       - unique_grain:
           arguments:
             columns: [order_id, line_no]
     columns:
       - name: order_id
-        description: Заказ, к которому относится позиция.
+        description: The order the line belongs to.
       - name: line_no
-        description: Номер позиции внутри заказа. Вместе с order_id образует зерно.
+        description: Line number within the order. Together with order_id it forms the grain.
       - name: order_date
         description: >
-          Дата из позиции, а не из шапки: в сыром слое это ключ партиции, и он
-          есть даже у осиротевшей строки. Совпадение с датой шапки - инвариант,
-          и проверяется он тестом, а не навязывается джойном. По этой же колонке
-          режется окно пересчета и стоит индекс.
+          The date from the line, not from the header: in the raw layer it is
+          the partition key, and even an orphaned row carries it. Agreeing with
+          the header date is an invariant, and it is checked by a test rather
+          than forced by a join. The reprocessing window is cut on this same
+          column, and the index sits on it.
         data_tests: [not_null]
       - name: store_id
         description: >
-          Магазин из шапки заказа. Джойн левый намеренно, чтобы позиция без
-          заказа не исчезла до проверки - и вот эта проверка. Null здесь
-          означает позицию-сироту, и считать по ней выручку нельзя.
+          The store from the order header. The join is deliberately a left one
+          so that a line without an order does not vanish before it is checked —
+          and this is that check. A null here means an orphaned line, and no
+          revenue may be counted on it.
         data_tests: [not_null]
       - name: channel
-        description: Канал заказа из шапки. Витриной продаж не используется, нужен для разборов.
+        description: The order's channel from the header. The sales mart does not use it; it is there for investigations.
       - name: is_cancelled
-        description: Признак отмены из шапки. Отмененные не дают выручки.
+        description: Cancellation flag from the header. Cancelled orders yield no revenue.
         data_tests: [not_null]
       - name: is_offline
-        description: Признак офлайн-заказа из шапки.
+        description: Offline-order flag from the header.
       - name: sku
-        description: Непрозрачный код позиции. За пределы этой модели не выходит.
+        description: An opaque item code. It does not travel beyond this model.
       - name: quantity
-        description: Количество. Ноль встречается - заложенный выброс.
+        description: Quantity. Zero does occur — a planted outlier.
         data_tests: [not_null, not_negative]
       - name: unit_price
-        description: Цена за единицу.
+        description: Price per unit.
       - name: line_amount
-        description: Сумма позиции. Отрицательные значения не отфильтрованы намеренно.
+        description: Line amount. Negative values are deliberately left unfiltered.
         data_tests: [not_null]
       - name: source_copies
-        description: Сколько строк на эту позицию было в источнике до дедупликации.
+        description: How many rows the source held for this line before deduplication.
 
   - name: int_returns_attributed
     description: >
-      Возврат, привязанный к магазину через свой заказ. Зерно - return_id.
-      Модель обязательна, а не декоративна: в сыром слое возвратов нет store_id.
+      A return tied to a store through its order. Grain — return_id. The model
+      is required rather than decorative: returns in the raw layer carry no
+      store_id.
     columns:
       - name: return_id
-        description: Идентификатор возврата.
+        description: Return identifier.
         data_tests: [unique, not_null]
       - name: order_id
-        description: Заказ, к которому относится возврат.
+        description: The order the return belongs to.
       - name: line_no
-        description: Возвращенная позиция заказа.
+        description: The order line that was returned.
       - name: store_id
         description: >
-          Магазин из заказа. Null означает возврат-сироту: сумма вычиталась бы
-          из выручки неизвестно чего.
+          The store taken from the order. A null means an orphaned return: the
+          amount would be subtracted from the revenue of no store in
+          particular.
         data_tests: [not_null]
       - name: is_cancelled
         description: >
-          Признак отмены исходного заказа. Возврат к отмененному заказу
-          невозможен по смыслу - это проверяет отдельный тест
-          assert_returns_belong_to_live_orders.
+          Cancellation flag of the original order. A return against a cancelled
+          order makes no sense — a test of its own,
+          assert_returns_belong_to_live_orders, checks that.
         data_tests: [not_null]
       - name: order_date
-        description: Дата исходного заказа. К ней возврат относится в витрине продаж.
+        description: Date of the original order. This is the date the sales mart attributes the return to.
         data_tests: [not_null]
       - name: returned_date
-        description: Дата приезда возврата. По ней видно, откуда взялось изменение вчерашнего числа.
+        description: The date the return arrived. It shows where a change to yesterday's number came from.
         data_tests: [not_null]
       - name: delay_days
-        description: Задержка возврата в днях. Вход для размера окна пересчета и для флага.
+        description: Return delay in days. The input for the size of the reprocessing window and for the flag.
         data_tests: [not_null, not_negative]
       - name: quantity
-        description: Возвращенное количество.
+        description: The quantity returned.
       - name: returned_amount
-        description: Сумма возврата.
+        description: Return amount.
 
   - name: int_store_day_spine
     description: >
-      Плотная решетка "магазин на день" от даты открытия магазина. Зерно -
-      (store_id, calendar_date), ровно 62 690 строк. Зерно обеих витрин.
+      A dense store-by-day grid starting from each store's opening date. Grain —
+      (store_id, calendar_date), exactly 62,690 rows. The grain of both marts.
     data_tests:
       - unique_grain:
           arguments:
             columns: [store_id, calendar_date]
     columns:
       - name: store_id
-        description: Магазин. В решетке присутствуют все 120.
+        description: The store. All 120 of them are present in the grid.
         data_tests: [not_null]
       - name: calendar_date
         description: >
-          День горизонта. Горизонт вычисляется из наблюдаемых данных, а не
-          берется константой: константа разъехалась бы с генератором молча.
+          A day of the horizon. The horizon is computed from the observed data
+          rather than taken as a constant: a constant would drift away from the
+          generator silently.
         data_tests: [not_null]

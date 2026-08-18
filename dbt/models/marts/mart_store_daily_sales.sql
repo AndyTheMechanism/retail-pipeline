@@ -1,41 +1,45 @@
--- Продажи по магазину и дню.
+-- Sales per store and day.
 --
--- Зерно задает спайн, а не данные: строка есть на каждый день работы каждого
--- магазина, даже если в этот день из источника не приехало ничего. Пустота при
--- этом остается пустотой - coalesce до нуля стоит только там, где данные
--- приехали. Ноль означает "посчитали, и вышел ноль", null - "считать не по
--- чему", и подменять второе первым нельзя: это ровно та ошибка, из-за которой
--- витрина обновляется молча и неправильно.
+-- The grain is set by the spine, not by the data: there is a row for every
+-- working day of every store, even if nothing arrived from the source that day.
+-- Emptiness stays emptiness — a coalesce to zero sits only where the data did
+-- arrive. Zero means "we counted, and it came to zero", null means "there was
+-- nothing to count", and the second must not be replaced by the first: that is
+-- exactly the mistake that makes a mart update silently and wrongly.
 --
--- Главное решение витрины: возврат относится к дате заказа, а не к дате
--- приезда. Иначе вчерашнее число не менялось бы никогда - а весь проект про
--- то, что оно меняется и что это видно. На этом стоят окно пересчета этой
--- витрины и модель mart_store_daily_revisions; атрибуция по дате возврата
--- обнулила бы оба.
+-- The main decision of this mart: a return belongs to the order date, not to
+-- the arrival date. Otherwise yesterday's number would never move — and this
+-- whole project is about that number moving and the move being visible. The
+-- reprocessing window of this mart and the mart_store_daily_revisions model
+-- both rest on that; attributing by return date would leave both with nothing
+-- to do.
 --
--- Рядом стоит returns_arrived_amount по второй оси - возвраты, приехавшие в
--- этот день к заказам любых дат. Она не участвует в выручке и нужна ровно для
--- одного: показать, откуда взялось изменение прошлого числа.
+-- Alongside sits returns_arrived_amount on the second axis — returns that
+-- arrived on this day against orders of any date. It takes no part in revenue
+-- and exists for exactly one thing: to show where a change to a past number
+-- came from.
 --
--- Заказы считаются по шапкам, а не по позициям: заказ без позиций все равно
--- заказ. Отмененные не выбрасываются, а выносятся отдельной колонкой - день,
--- где половина заказов отменилась, обязан отличаться от дня, когда их просто
--- не было.
+-- Orders are counted from headers rather than from lines: an order with no
+-- lines is still an order. Cancelled ones are not thrown away but taken out
+-- into a column of their own — a day when half the orders were cancelled has
+-- to look different from a day when there simply were none.
 --
--- ПРО ОКНО ПЕРЕСЧЕТА.
+-- ON THE REPROCESSING WINDOW.
 --
--- Витрина инкрементальная, и стратегия записи та же, что у загрузки сырья, -
--- delete-and-insert по ключу. Симметрия не случайная: повторный прогон за ту
--- же дату обязан давать то же состояние и там, и тут, а не задвоение.
+-- The mart is incremental, and the write strategy is the same as the raw
+-- load's — delete-and-insert by key. The symmetry is not accidental: a repeat
+-- run for the same date has to leave the same state in both places, not doubled
+-- rows.
 --
--- Ежедневный прогон пересобирает не один день, а окно назад, потому что
--- возврат приезжает позже своей покупки и меняет выручку прошлого. Размер окна
--- задан переменной return_window_days в dbt_project.yml, там же обоснование
--- числом. Считать всю историю каждый день дорого, считать только сегодня -
--- неверно; окно - это цена, выбранная осознанно, а не компромисс по невнимению.
+-- A daily run rebuilds a window backwards rather than a single day, because a
+-- return arrives later than its purchase and changes the revenue of a past day.
+-- The size of the window is set by the return_window_days variable in
+-- dbt_project.yml, and the number is justified there. Counting the whole
+-- history every day is expensive, counting only today is wrong; the window is a
+-- price chosen deliberately, not a compromise that crept in unnoticed.
 --
--- Без run_date фильтра нет и витрина собирается целиком. Оба пути дают
--- одинаковый результат - это и проверяется контрольными суммами.
+-- Without run_date there is no filter and the mart is built in full. Both paths
+-- give the same result — and that is what the checksums verify.
 
 {{ config(
     materialized = 'incremental',
@@ -90,8 +94,8 @@ returns_by_order_date as (
         order_date,
         sum(returned_amount) as returns_amount
     from {{ ref('int_returns_attributed') }}
-    -- Возврат относится к дате заказа, поэтому и окно режется по ней: дата
-    -- приезда у этих возвратов может быть любой, в том числе сегодняшней.
+    -- A return belongs to the order date, so the window is cut on it too: the
+    -- arrival date of these returns can be anything, today included.
     {% if in_window %} where order_date {{ in_window }} {% endif %}
     group by store_id, order_date
 ),
@@ -102,7 +106,8 @@ returns_by_arrival as (
         returned_date,
         sum(returned_amount) as returns_arrived_amount
     from {{ ref('int_returns_attributed') }}
-    -- А эта колонка живет по второй оси, и окно ей режется по дате приезда.
+    -- This column lives on the second axis, and its window is cut on the
+    -- arrival date.
     {% if in_window %} where returned_date {{ in_window }} {% endif %}
     group by store_id, returned_date
 ),
@@ -112,10 +117,10 @@ joined as (
         sp.store_id,
         sp.calendar_date as order_date,
 
-        -- Признак того, что заказы за этот день вообще приехали. Для открытого
-        -- магазина это норма; ложь по всей сети в один день означает
-        -- непришедшую партицию, и ловит ее гейт свежести
-        -- assert_source_is_fresh.
+        -- Whether any orders arrived for this day at all. For an open store
+        -- that is the norm; false across the whole network on one day means a
+        -- partition that did not arrive, and the freshness gate
+        -- assert_source_is_fresh catches it.
         o.store_id is not null as has_orders,
 
         o.orders_count,
@@ -150,9 +155,9 @@ select
     case when has_orders then coalesce(revenue_gross, 0)  end as revenue_gross,
     case when has_orders then coalesce(returns_amount, 0) end as returns_amount,
 
-    -- Эта колонка живет по своей оси: партиция возвратов за день приезжает
-    -- независимо от того, приехали ли заказы. Пустая партиция означает, что
-    -- возвратов в этот день не было, - то есть ноль, а не неизвестность.
+    -- This column lives on an axis of its own: the returns partition for a day
+    -- arrives regardless of whether the orders did. An empty partition means
+    -- there were no returns that day — a zero, not an unknown.
     coalesce(returns_arrived_amount, 0) as returns_arrived_amount,
 
     case when has_orders

@@ -1,14 +1,16 @@
-# Окружение. Звездочка не для красоты: окружений несколько - генератор, dbt,
-# сверка, - и без нее .venv-dbt уехал бы в публичный коммит целиком.
+# Environments. The asterisk is not decoration: there are several of them —
+# the generator, dbt, the reconciliation — and without it .venv-dbt would have
+# gone into a public commit whole.
 .venv*/
 venv/
 __pycache__/
 *.py[cod]
 .env
 
-# Данные не коммитятся: коммитится генератор и seed.
-# Список шире, чем то, что проект вообще умеет порождать, и это запас прочности:
-# публичный репозиторий - то место, где случайный git add -A стоит дороже всего.
+# The data is not committed: the generator and the seed are.
+# The list is wider than anything the project can even produce, and that is a
+# safety margin: a public repository is where a careless git add -A costs the
+# most.
 data/
 *.csv
 *.parquet
@@ -16,9 +18,10 @@ data/
 *.zip
 *.pbix
 
-# Airflow. Конфиг не коммитится намеренно: airflow.cfg генерируется сам, в нем
-# больше ста килобайт чужих умолчаний, и объяснить их нельзя. Все, что нужно
-# этому проекту, задается шестью переменными окружения в Makefile.
+# Airflow. The config is deliberately not committed: airflow.cfg is generated,
+# it runs to over a hundred kilobytes of somebody else's defaults, and those
+# cannot be explained. Everything this project needs is set by six environment
+# variables in the Makefile.
 airflow/airflow.cfg
 airflow/logs/
 airflow/alerts.log
@@ -34,7 +37,7 @@ dbt_packages/
 logs/
 .user.yml
 
-# Редакторы и система
+# Editors and the operating system
 .idea/
 .vscode/
 .DS_Store

@@ -1,15 +1,15 @@
-"""Как устроен один день сети.
+"""How one day of the chain is put together.
 
-Главное свойство всего файла: **генерация дня - чистая функция от (сид, дата).**
-Никакой день не зависит от того, сгенерирован ли соседний. Из этого следует
-то, ради чего это и сделано, - партицию за любую дату можно пересобрать
-отдельно и получить ровно те же строки, что дал бы полный прогон.
+The main property of this whole file: **generating a day is a pure function of
+(seed, date).** No day depends on whether its neighbour has been generated.
+And that is the point of it: the partition for any date can be rebuilt on its
+own and comes out with exactly the rows a full run would have produced.
 
-Одно исключение из независимости честное и содержательное: возвраты. Возврат,
-приехавший в день R, относится к заказу, сделанному раньше. Поэтому возврат
-вычисляется **из самого заказа** - функцией от его идентификатора, - и
-одинаково получается что при полном прогоне, что при пересборке партиции за R
-с оглядкой на MAX_RETURN_DELAY_DAYS назад.
+There is one honest and substantial exception to that independence: returns. A
+return that arrives on day R belongs to an order made earlier. So a return is
+computed **from the order itself** — as a function of its identifier — and
+comes out the same either way: in a full run, or when the partition for R is
+rebuilt looking MAX_RETURN_DELAY_DAYS days back.
 """
 
 from __future__ import annotations
@@ -22,25 +22,25 @@ from .config import CANCELLATION_RATE, MAX_RETURN_DELAY_DAYS, RETURN_RATE, Confi
 from .rng import stream
 
 CITIES = [
-    "Москва", "Санкт-Петербург", "Новосибирск", "Екатеринбург", "Казань",
-    "Нижний Новгород", "Челябинск", "Самара", "Уфа", "Ростов-на-Дону",
-    "Омск", "Красноярск", "Воронеж", "Пермь", "Волгоград", "Краснодар",
-    "Саратов", "Тюмень", "Тольятти", "Ижевск", "Барнаул", "Ульяновск",
-    "Иркутск", "Хабаровск", "Ярославль", "Владивосток", "Махачкала",
-    "Томск", "Оренбург", "Кемерово",
+    "Moscow", "Saint Petersburg", "Novosibirsk", "Yekaterinburg", "Kazan",
+    "Nizhny Novgorod", "Chelyabinsk", "Samara", "Ufa", "Rostov-on-Don",
+    "Omsk", "Krasnoyarsk", "Voronezh", "Perm", "Volgograd", "Krasnodar",
+    "Saratov", "Tyumen", "Tolyatti", "Izhevsk", "Barnaul", "Ulyanovsk",
+    "Irkutsk", "Khabarovsk", "Yaroslavl", "Vladivostok", "Makhachkala",
+    "Tomsk", "Orenburg", "Kemerovo",
 ]
 
-FORMATS = ["малый", "средний", "большой"]
+FORMATS = ["small", "medium", "large"]
 FORMAT_WEIGHTS = [0.45, 0.38, 0.17]
-FORMAT_BASE_ORDERS = {"малый": 12, "средний": 25, "большой": 45}
+FORMAT_BASE_ORDERS = {"small": 12, "medium": 25, "large": 45}
 
-CHANNELS = ["офлайн", "сайт", "приложение"]
+CHANNELS = ["offline", "web", "app"]
 CHANNEL_WEIGHTS = [0.62, 0.22, 0.16]
 
-# Понедельник = 0. Выходные заметно выше, понедельник ниже.
+# Monday = 0. Weekends are noticeably higher, Monday lower.
 WEEKDAY_FACTOR = [0.85, 0.92, 0.95, 1.00, 1.15, 1.35, 1.25]
 
-# Сезонность: декабрь - пик, январь и февраль - провал после него.
+# Seasonality: December is the peak, January and February the slump after it.
 MONTH_FACTOR = {
     1: 0.82, 2: 0.86, 3: 0.98, 4: 1.00, 5: 1.05, 6: 1.02,
     7: 0.97, 8: 1.03, 9: 1.08, 10: 1.04, 11: 1.10, 12: 1.32,
@@ -50,11 +50,11 @@ SKU_POOL_SIZE = 4000
 PRICE_BANDS = [(199, 899), (899, 2499), (2499, 6990), (6990, 19990)]
 PRICE_BAND_WEIGHTS = [0.46, 0.31, 0.18, 0.05]
 
-CANCEL_REASONS = ["отказ покупателя", "нет в наличии", "ошибка оформления", "не оплачен"]
+CANCEL_REASONS = ["customer declined", "out of stock", "checkout error", "not paid"]
 
-# Больше тысячи заказов на магазин за день не бывает, и на этом держится
-# кодирование order_id ниже. Если модель когда-нибудь вырастет - сломается
-# assert, а не данные.
+# A store never does more than a thousand orders in a day, and the encoding of
+# order_id below rests on that. If the model ever outgrows it, the assert
+# breaks rather than the data.
 MAX_ORDERS_PER_STORE_DAY = 1000
 
 
@@ -115,16 +115,16 @@ class DayData(NamedTuple):
     items: list[OrderItem]
     cancellations: list[Cancellation]
     traffic: list[Traffic]
-    # Возвраты, порожденные заказами этого дня, разложенные по дате приезда.
+    # Returns produced by this day's orders, bucketed by arrival date.
     returns_by_arrival: dict[date, list[Return]]
 
 
 def make_order_id(day: date, store_id: int, index: int) -> int:
-    """Идентификатор заказа кодирует дату и магазин.
+    """The order identifier encodes the date and the store.
 
-    Это не украшение: по идентификатору однозначно восстанавливается, к какой
-    партиции он относится, и возврат можно связать с заказом, не поднимая
-    таблицу заказов.
+    That is not decoration: the identifier tells you exactly which partition
+    an order belongs to, so a return can be tied to its order without touching
+    the orders table.
     """
     assert index < MAX_ORDERS_PER_STORE_DAY
     return (day.toordinal() * 100_000 + store_id) * MAX_ORDERS_PER_STORE_DAY + index
@@ -136,9 +136,10 @@ def build_stores(config: Config) -> list[Store]:
     for store_id in range(1, config.store_count + 1):
         city = rng.choice(CITIES)
         fmt = rng.choices(FORMATS, weights=FORMAT_WEIGHTS, k=1)[0]
-        # Часть сети открылась уже внутри горизонта - у таких магазинов до
-        # даты открытия не должно быть ни заказов, ни трафика. Это дешевый
-        # способ получить в данных честные пустоты, не являющиеся дефектом.
+        # Part of the chain opened inside the horizon — such stores must have
+        # neither orders nor traffic before their opening date. That is a
+        # cheap way to put honest emptiness into the data — emptiness that is
+        # not a defect.
         if rng.random() < 0.12:
             offset = rng.randrange(30, 400)
             opened = config.start_date + timedelta(days=offset)
@@ -166,11 +167,12 @@ def _order_count(config: Config, store: Store, day: date) -> int:
 
 
 def _return_delay(rng) -> int:
-    """Задержка возврата в днях.
+    """Delay of a return, in days.
 
-    Смесь, а не одно распределение: большая часть возвращается почти сразу,
-    но хвост тянется. Именно хвост определяет размер окна пересчета, поэтому
-    его измеряют по данным (make measure-returns), а не берут отсюда.
+    A mixture rather than one distribution: most returns come back almost at
+    once, but the tail runs long. It is the tail that sets the size of the
+    reprocessing window, which is why it is measured from the data
+    (make measure-returns) rather than taken from here.
     """
     bucket = rng.choices([0, 1, 2, 3], weights=[0.52, 0.29, 0.15, 0.04], k=1)[0]
     if bucket == 0:
@@ -183,11 +185,11 @@ def _return_delay(rng) -> int:
 
 
 def _returns_for_order(config: Config, order: Order, items: list[OrderItem]) -> list[Return]:
-    """Возвраты по одному заказу - чистая функция от заказа.
+    """Returns for one order — a pure function of the order.
 
-    Ровно это свойство делает партицию возвратов пересобираемой.
+    That property is exactly what makes the returns partition rebuildable.
     """
-    if order.status == "отменен" or not items:
+    if order.status == "cancelled" or not items:
         return []
     rng = stream(config.seed, "returns", order.order_id)
     if rng.random() >= RETURN_RATE:
@@ -217,7 +219,7 @@ def _returns_for_order(config: Config, order: Order, items: list[OrderItem]) -> 
 
 
 def generate_day(config: Config, day: date, stores: list[Store]) -> DayData:
-    """Полное содержимое одного дня. Чистая функция от (config, day)."""
+    """The full contents of one day. A pure function of (config, day)."""
     missing = defects.missing_partitions(config)
     orders_missing = day in missing.get("orders", set())
     traffic_missing = day in missing.get("store_traffic", set())
@@ -241,7 +243,7 @@ def generate_day(config: Config, day: date, stores: list[Store]) -> DayData:
                 o_rng = stream(config.seed, "order", order_id)
 
                 channel = o_rng.choices(CHANNELS, weights=CHANNEL_WEIGHTS, k=1)[0]
-                if channel == "офлайн":
+                if channel == "offline":
                     offline_orders += 1
 
                 hour = o_rng.randrange(9, 22)
@@ -250,7 +252,7 @@ def generate_day(config: Config, day: date, stores: list[Store]) -> DayData:
                     hour, o_rng.randrange(0, 60), o_rng.randrange(0, 60),
                 )
                 cancelled = o_rng.random() < CANCELLATION_RATE
-                status = "отменен" if cancelled else "оформлен"
+                status = "cancelled" if cancelled else "placed"
                 customer_id = o_rng.randrange(1, 400_000) if o_rng.random() < 0.7 else None
 
                 order = Order(
@@ -318,10 +320,10 @@ def _traffic_for(
     offline_orders: int,
     broken: list[defects.BrokenCounterWindow],
 ) -> Traffic:
-    """Трафик считается ОТ заказов, а не независимо от них.
+    """Traffic is computed FROM the orders, not independently of them.
 
-    Иначе конверсия получилась бы случайной величиной, и правило "чеки больше
-    трафика" срабатывало бы само по себе, без всякого битого прибора.
+    Otherwise conversion would be a random variable, and the rule "more orders
+    than visitors" would fire on its own, with no broken counter involved.
     """
     rng = stream(config.seed, "traffic", day.toordinal(), store.store_id)
     conversion = rng.uniform(0.055, 0.115)
@@ -337,7 +339,7 @@ def _traffic_for(
 
 
 def _apply_duplicates(config: Config, day: date, items: list[OrderItem]) -> list[OrderItem]:
-    """Задваивает часть строк выгрузки, как это делает сбойный экспорт."""
+    """Doubles some of the export rows, the way a faulty export does."""
     if not items:
         return items
     rng = stream(config.seed, "duplicates", day.toordinal())
@@ -347,7 +349,7 @@ def _apply_duplicates(config: Config, day: date, items: list[OrderItem]) -> list
 
 
 def _apply_outliers(config: Config, day: date, items: list[OrderItem]) -> list[OrderItem]:
-    """Отрицательная сумма и нулевое количество - то, чего не бывает."""
+    """A negative amount and a zero quantity — things that do not happen."""
     if not items:
         return items
     rng = stream(config.seed, "outliers", day.toordinal())

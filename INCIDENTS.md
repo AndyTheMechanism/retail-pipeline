@@ -1,225 +1,238 @@
-# Журнал инцидентов
+# Incident log
 
-Что ломалось, как это выглядело снаружи и что с этим делать. Записи двух родов:
-инциденты данных - то, ради чего пайплайн и построен, каждый воспроизводится
-одной командой; и инциденты сборки - то, на чем спотыкался сам проект, пока его
-писали.
+What broke, what it looked like from the outside, and what to do about it. Two
+kinds of entry: data incidents — what the pipeline is built for, each one
+reproducible with a single command — and build incidents, the things the project
+itself tripped over while it was being written.
 
-Второй раздел здесь не для покаяния. Общее у всех семи записей в нем то, что ни
-одна ошибка не сообщила о себе сама: установка проходила без ошибок, проверка
-светилась зеленым, объяснение выглядело исчерпывающим, команда падала с
-сообщением про то, чего на самом деле не происходило. Это ровно тот класс,
-против которого построен весь проект, - тихая ошибка в инструменте проверки
-опаснее громкой ошибки в данных, - и прятать его в истории коммитов, где никто
-не прочтет, было бы странно.
-
----
-
-## Инциденты данных
-
-### Вчерашнее число изменилось
-
-**Симптом.** Выручка за прошлый день стала меньше, чем была вчера.
-
-**Что сделал пайплайн.** Ровно то, что должен. Возврат приезжает через
-несколько дней после покупки и относится к дню покупки, поэтому ежедневный
-прогон пересобирает окно назад. Каждое изменение ранее опубликованного числа
-оставляет строку в `marts.mart_store_daily_revisions`: магазин, день, когда
-пересчитали, было, стало, дельта и причина.
-
-**Что делать.** Посмотреть журнал: `make revisions`. Если причина - "поздний
-возврат", это штатная жизнь домена, а не поломка. Если "пересобрано сырье" -
-значит переехал сам источник, и вот это уже повод разбираться.
-
-**Воспроизвести.** `make scenario-late-return`
-
-**Известное ограничение.** Окно пересчета - 28 дней, 99-й перцентиль
-наблюдаемой задержки. Возврат, приехавший позже, попадает к заказу, чей день
-пересобирать уже не будут: число за тот день останется прежним. Потеря не
-молчит - такие дни помечаются флагом `return_outside_window` в
-`marts.mart_store_daily_quality`. Обоснование размера окна числами - в
-`dbt/dbt_project.yml`.
-
-### Источник за день не приехал
-
-**Симптом.** Прогон упал, витрина за день не появилась.
-
-**Что сделал пайплайн.** Задача `check_freshness` не прошла, сборка не
-началась, витрина осталась прежней до бита, в `airflow/alerts.log` появилась
-строка, команда вернула ненулевой код. Числа за этот день в витрине нет - и это
-правильнее нуля: ноль означал бы, что продаж не было, тогда как их не
-посчитали.
-
-**Что делать.** Дождаться данных и позвать ту же команду за ту же дату -
-`make run DATE=...`. Загрузка идет через delete-and-insert по ключу партиции,
-поэтому повтор безопасен и ничего не задваивает. Ручной процедуры нет.
-
-**Воспроизвести.** `make scenario-missing-partition`
-
-### Конверсия выше ста процентов
-
-**Симптом.** В одной точке чеков больше, чем посетителей.
-
-**Что сделал пайплайн.** Прошел до конца. Это дефект прибора, а не данных, и
-пересчетом он не чинится: останавливать из-за него всю сеть значит остаться без
-цифр по всем магазинам вместо одного. Магазин помечен строкой в
-`marts.mart_store_daily_quality` с причиной человеческими словами, конверсия
-там не подменена оценкой и не выброшена - сказано, что ей нельзя верить.
-
-**Что делать.** Чинить счетчик. В отчете помеченные точки исключать из средних,
-а не пересчитывать.
-
-**Воспроизвести.** `make scenario-broken-counter`
-
-**Отдельный случай - мертвый прибор.** Ноль посетителей при живых чеках. Правило
-записано умножением (`чеки > трафик × 0,95`), а не делением, именно поэтому:
-при нуле посетителей отношения не существует, и запись через конверсию потеряла
-бы худший случай.
-
-### Сверка чека с сырьем покраснела, а данные в порядке
-
-**Симптом.** Гейт остановил цепочку на `assert_order_lines_match_raw`: в
-промежуточном слое за какой-то день не то число позиций или не та сумма, хотя
-сырье выглядит нормально.
-
-**Что сделал пайплайн.** Ровно то, что должен, и это не ложная тревога.
-Промежуточный слой инкрементальный - он трогает только целевую дату, - поэтому
-если сырье за прошлую дату перезалили, а прогон за нее не позвали, слой остался
-со старым содержимым. Сверка идет к источнику напрямую, минуя staging, и видит
-расхождение первой.
-
-**Что делать.** Позвать прогон за ту дату, чье сырье менялось:
-`make run DATE=...`. Если непонятно, за какую именно, или их много - полная
-пересборка: `make models`, она собирает все слои с нуля и стоит около минуты.
-
-**Откуда этот режим отказа взялся.** Его ввела оптимизация, описанная в
-[`QUERY-PLAN.md`](QUERY-PLAN.md): до нее слой пересобирался целиком каждый
-прогон и отстать не мог. Риск был назван при пересмотре решения и принят
-осознанно - именно потому, что ловит его уже стоявший гейт, а не потому, что он
-маловероятен.
+The second section is not here as penance. What all seven entries in it have in
+common is that not one of the errors announced itself: the install went through
+cleanly, the check came up green, the explanation looked complete, the command
+failed with a message about something that was not actually happening. This is
+exactly the class of problem the whole project is built against — a silent error
+in the checking tool is more dangerous than a loud one in the data — and burying
+it in a commit history nobody reads would have been odd.
 
 ---
 
-## Инциденты сборки
+## Data incidents
 
-### dbt 1.11 встает на Python 3.14 и падает на первой же команде
+### Yesterday's number changed
 
-**Симптом.** `pip install` проходит без единой ошибки, `dbt --version` падает с
-`UnserializableField`.
+**Symptom.** Revenue for the previous day came out lower than it was yesterday.
 
-**Причина.** dbt-core 1.11 пинит `mashumaro<3.15`, а тот на Python 3.14 не умеет
-собрать распаковщик. Поддержка приехала в mashumaro 3.17, и разрешает его
-только dbt 1.12.
+**What the pipeline did.** Exactly what it is supposed to. A return arrives a
+few days after the purchase and belongs to the purchase date, so the daily run
+rebuilds a window backwards. Every change to a previously published number
+leaves a row in `marts.mart_store_daily_revisions`: store, day, when it was
+recomputed, before, after, delta and reason.
 
-**Что сделано.** Версия пришпилена снизу, а не сверху:
-`dbt-core>=1.12,<1.13`. Обоснование лежит рядом с пином в
-`requirements-dbt.txt`, потому что пин снизу выглядит как ошибка и его спросят.
+**What to do.** Look at the log: `make revisions`. If the reason is "late
+return", that is ordinary life in this domain, not a breakage. If it is "raw
+layer rebuilt", the source itself has moved, and that is worth looking into.
 
-**Вывод.** Успешная установка - не доказательство работоспособности. Проверять
-надо запуском.
+**Reproduce.** `make scenario-late-return`
 
-### Проверка прошла зеленой, не проверив ничего
+**Known limitation.** The reprocessing window is 28 days, the 99th percentile of
+the observed delay. A return arriving later belongs to an order whose day will
+no longer be rebuilt: the number for that day stays as it was. The loss is not
+silent — such days are marked with the `return_outside_window` flag in
+`marts.mart_store_daily_quality`. The numbers that justify the size of the
+window are in `dbt/dbt_project.yml`.
 
-**Симптом.** В сверке витрин с сырьем проверка "за дни без трафика конверсия
-пуста" показывала успех. Строк, к которым она применялась, было ноль.
+### The source for a day did not arrive
 
-**Причина.** Даты сравнивались строками через `isin`, а колонка была
-`datetime64`. Совпадений не нашлось, множество оказалось пустым, а утверждение
-"для всех строк верно" на пустом множестве истинно.
+**Symptom.** The run failed and no mart appeared for the day.
 
-**Что сделано.** Каждое сравнение теперь печатает число сравненных строк, а
-пустое сравнение считается провалом. Даты держатся объектами, а не строками.
+**What the pipeline did.** The `check_freshness` task did not pass, the build
+never started, the mart stayed bit-for-bit as it was, a line appeared in
+`airflow/alerts.log`, and the command exited non-zero. There is no number for
+that day in the mart — which is more correct than a zero: zero would say there
+were no sales, when in fact nothing was counted.
 
-**Вывод.** Проверка, которой нечего было проверять, выглядит точно так же, как
-успешная. Считать сравненные строки дешевле, чем однажды поверить пустому
-зеленому.
+**What to do.** Wait for the data and call the same command for the same date —
+`make run DATE=...`. Loading goes through delete-and-insert by partition key, so
+a repeat is safe and doubles nothing. There is no manual procedure.
 
-### Тест про отмены падал на границе горизонта
+**Reproduce.** `make scenario-missing-partition`
 
-**Симптом.** Гейт краснел на 56 заказах 29 и 30 июня, хотя данные были в
-порядке.
+### Conversion above one hundred per cent
 
-**Причина.** Отмена приезжает на день-два позже заказа, и у заказов последних
-двух дней горизонта строки отмены еще нет - не потому, что она потерялась, а
-потому, что ее время не пришло.
+**Symptom.** At one store there are more orders than visitors.
 
-**Что сделано.** Проверка ограничена по датам на глубину задержки. Обратная
-сторона - строка отмены при живом заказе - границы не имеет: это рассинхрон в
-любой день.
+**What the pipeline did.** Ran to completion. This is a defect in the device,
+not in the data, and reprocessing does not fix it: stopping the whole network
+over it means having no numbers for every store instead of one. The store is
+marked by a row in `marts.mart_store_daily_quality` with the reason in plain
+words; the conversion there is neither replaced by an estimate nor thrown away —
+the row says outright that it cannot be trusted.
 
-**Вывод.** Проверка, сравнивающая два источника с разной задержкой, обязана
-быть ограничена по датам на глубину этой задержки. Иначе она красная всегда, ее
-выключают, и гейта больше нет.
+**What to do.** Fix the counter. In a report, exclude the flagged stores from
+averages rather than recomputing them.
 
-### Объяснение расхождения не объясняло расхождение
+**Reproduce.** `make scenario-broken-counter`
 
-**Симптом.** Сценарий позднего возврата убирал возвратов на 2,88 млн, а журнал
-ревизий показывал движение на 1,63 млн. Разница объявлялась целиком отнесенной
-на хвост за окном пересчета - шесть возвратов на 26,5 тысячи. То есть
-объяснение закрывало два процента разрыва, а выглядело как полное.
+**A special case — the dead device.** Zero visitors with orders still coming in.
+The rule is written as a multiplication (`orders > visitors × 0.95`) rather than
+a division for exactly this reason: with zero visitors the ratio does not exist,
+and writing the rule in terms of conversion would have lost the worst case.
 
-**Причина.** Сравнивались разные величины. 2,88 млн - валовая сумма убранных
-строк. 1,63 млн - чистое движение опубликованных чисел, в котором 722 ревизии
-вниз на 2,33 млн частично погашены 169 ревизиями вверх на 0,70 млн.
+### The order-lines reconciliation went red while the data was fine
 
-Ревизии вверх, в свою очередь, - следствие устройства показа: первый снимок
-берется со всей витрины, а прогон пересобирает только окно назад, поэтому дни
-после него остаются в снимке со значениями, где удаленные возвраты еще учтены.
-База сравнения оказалась не одним моментом времени, а склейкой двух.
+**Symptom.** The gate stopped the chain at `assert_order_lines_match_raw`: for
+some date the intermediate layer has the wrong number of lines or the wrong
+total, although the raw layer looks fine.
 
-**Что сделано.** Сценарий теперь печатает разложение по знаку и прямо
-предупреждает, что суммарную дельту журнала нельзя сравнивать с суммой убранных
-возвратов. Цена окна названа отдельной строкой, а не выдается за объяснение
-всего разрыва.
+**What the pipeline did.** Exactly what it is supposed to, and this is not a
+false alarm. The intermediate layer is incremental — it touches only the target
+date — so if the raw layer for an earlier date was reloaded and no run was
+called for that date, the layer kept its old contents. The reconciliation goes
+to the source directly, bypassing staging, and sees the discrepancy first.
 
-**Вывод.** Хуже необъясненного расхождения только объясненное неправильно:
-первое заставляет разбираться, второе закрывает вопрос. Проверять надо не
-только то, сошлось ли объяснение по смыслу, но и то, сходится ли оно по сумме.
+**What to do.** Call a run for the date whose raw data changed:
+`make run DATE=...`. If it is not clear which date that was, or there are many,
+rebuild everything: `make models` builds all the layers from scratch and costs
+about a minute.
 
-### Булево из выгрузки приехало строками
+**Where this failure mode came from.** It was introduced by the optimisation
+described in [`QUERY-PLAN.md`](QUERY-PLAN.md): before that, the layer was
+rebuilt in full on every run and could not fall behind. The risk was named when
+the decision was revisited, and it was taken on deliberately — precisely because
+a gate that was already standing catches it, not because it is unlikely.
 
-**Симптом.** Сверка падала на отрицании булевой колонки, а в другом месте
-отрицание молча давало целые числа вместо булевых.
+---
 
-**Причина.** `COPY ... FORMAT CSV` печатает булево как `t` и `f`, и pandas
-честно читает их строками. После левого джойна колонка становится объектной, и
-`~` над объектным столбцом возвращает не то, что кажется.
+## Build incidents
 
-**Что сделано.** Типы приводятся сразу после чтения, явно.
+### dbt 1.11 installs on Python 3.14 and fails on the very first command
 
-**Вывод.** Граница между базой и инструментом анализа - место, где типы теряются
-тихо. Проверять их надо там, а не там, где сломалось.
+**Symptom.** `pip install` goes through without a single error, `dbt --version`
+fails with `UnserializableField`.
 
-### Показ объяснял то, чего не произошло
+**Cause.** dbt-core 1.11 pins `mashumaro<3.15`, and that version cannot build an
+unpacker on Python 3.14. Support arrived in mashumaro 3.17, and only dbt 1.12
+allows it.
 
-**Симптом.** Сценарий позднего возврата печатал абзац про то, откуда берутся
-ревизии вверх, - на прогоне, где ревизий вверх было ноль. Строкой выше стояло
-"Убрано 0.00 брутто": возвраты за хвостом снял прерванный прошлый заход, и
-удалять было уже нечего.
+**What was done.** The version is pinned from below rather than from above:
+`dbt-core>=1.12,<1.13`. The reasoning sits next to the pin in
+`requirements-dbt.txt`, because a lower bound looks like a mistake and somebody
+will ask about it.
 
-Каждое число по отдельности было верным. Неверным было соседство: рассказ шел
-про механику, которой в этом прогоне не случилось.
+**Lesson.** A successful install is no proof that the thing works. Check by
+running it.
 
-**Причина.** Оба абзаца печатались безусловно. Написаны они были по прогону, где
-и удаление, и ревизии вверх происходили, и вопрос "а если их не будет" не
-задавался вовсе.
+### A check came up green without checking anything
 
-**Что сделано.** Оба абзаца теперь печатаются по факту: при нулевых ревизиях
-вверх объясняется, почему их нет, при нулевом удалении - что сырье урезали до
-старта и как увидеть сценарий целиком.
+**Symptom.** In the reconciliation of the marts against the raw layer, the check
+"conversion is empty on days with no traffic" reported success. The number of
+rows it applied to was zero.
 
-**Вывод.** Проект построен на правиле "не подменять факт интерпретацией", и
-нарушил его собственный показ - в том месте, где интерпретация написана заранее,
-а факт приходит во время выполнения. Текст, объясняющий результат, обязан
-зависеть от результата; иначе это не объяснение, а подпись под чужой картинкой.
+**Cause.** The dates were compared as strings through `isin` while the column
+was `datetime64`. Nothing matched, the set came out empty, and "true for every
+row" is true on an empty set.
 
-**Как нашлось.** Прогоном проекта с нуля по учебному разбору - тем же способом,
-что и следующая запись. Своя команда, запущенная в своем привычном состоянии,
-таких вещей не показывает.
+**What was done.** Every comparison now prints the number of rows compared, and
+an empty comparison counts as a failure. Dates are kept as date objects rather
+than strings.
 
-### Веб-интерфейс не поднимался: команда была установлена, но не найдена
+**Lesson.** A check that had nothing to check looks exactly like a check that
+passed. Counting the rows compared is cheaper than trusting one empty green
+result.
 
-**Симптом.** `make airflow` мгновенно падал, все четыре потока сразу:
+### The cancellations test failed at the edge of the horizon
+
+**Symptom.** The gate went red on 56 orders dated 29 and 30 June, although the
+data was fine.
+
+**Cause.** A cancellation arrives a day or two after its order, so orders from
+the last two days of the horizon have no cancellation row yet — not because it
+was lost, but because its time has not come.
+
+**What was done.** The check is bounded by dates to the depth of the delay. The
+opposite direction — a cancellation row against a live order — has no bound:
+that is a desync on any day.
+
+**Lesson.** A check comparing two sources with different delays must be bounded
+by dates to the depth of that delay. Otherwise it is red always, someone
+switches it off, and there is no gate any more.
+
+### The explanation of the discrepancy did not explain the discrepancy
+
+**Symptom.** The late-return scenario removed 2.88M worth of returns while the
+revision log showed movement of 1.63M. The difference was put down entirely to
+the tail beyond the reprocessing window — six returns worth 26.5K. So the
+explanation covered two per cent of the gap while reading as though it covered
+all of it.
+
+**Cause.** Two different quantities were being compared. 2.88M is the gross
+amount of the rows removed. 1.63M is the net movement of published numbers, in
+which 722 downward revisions totalling 2.33M are partly offset by 169 upward
+revisions totalling 0.70M.
+
+The upward revisions, in turn, follow from how the demo is built: the first
+snapshot is taken over the whole mart while a run rebuilds only a window
+backwards, so the days after it stay in the snapshot with values that still
+account for the deleted returns. The baseline turned out not to be one moment in
+time but two of them spliced together.
+
+**What was done.** The scenario now prints the breakdown by sign and warns
+outright that the log's net delta cannot be compared with the sum of the returns
+removed. The price of the window is named on a line of its own rather than
+passed off as the explanation of the whole gap.
+
+**Lesson.** The only thing worse than an unexplained discrepancy is one
+explained wrongly: the first makes somebody look into it, the second closes the
+question. What has to be checked is not only whether the explanation makes
+sense, but whether it adds up.
+
+### Booleans came out of the export as strings
+
+**Symptom.** The reconciliation crashed on the negation of a boolean column, and
+somewhere else the same negation silently produced integers instead of booleans.
+
+**Cause.** `COPY ... FORMAT CSV` prints booleans as `t` and `f`, and pandas
+dutifully reads them as strings. After a left join the column becomes an object
+column, and `~` over an object column returns something other than what it looks
+like.
+
+**What was done.** Types are cast explicitly, immediately after reading.
+
+**Lesson.** The boundary between the database and the analysis tool is where
+types get lost quietly. That is where they have to be checked — not where the
+thing broke.
+
+### The demo explained something that had not happened
+
+**Symptom.** The late-return scenario printed a paragraph about where upward
+revisions come from — on a run where the count of upward revisions was zero. The
+line above it read "0.00 gross was removed": an interrupted earlier attempt had
+already removed the returns in the tail, and there was nothing left to delete.
+
+Every number on its own was correct. What was wrong was putting them side by
+side: the text described a mechanism that had not happened on this run.
+
+**Cause.** Both paragraphs were printed unconditionally. They had been written
+against a run where both the deletion and the upward revisions did happen, and
+the question "what if there are none" was never asked at all.
+
+**What was done.** Both paragraphs are now printed against the facts: with zero
+upward revisions the text explains why there are none; with nothing deleted, it
+says that the raw layer was trimmed before the start, and how to see the whole
+scenario.
+
+**Lesson.** The project is built on the rule "do not substitute interpretation
+for fact", and it was the project's own demo that broke it — in exactly the
+place where the interpretation is written in advance and the fact arrives at run
+time. Text that explains a result must depend on that result; otherwise it is
+not an explanation but a caption under somebody else's picture.
+
+**How it was found.** By running the project from scratch while working through
+the study walkthrough — the same way as the next entry. Your own command, run in
+the state you always run it in, does not show you things like this.
+
+### The web UI would not come up: the command was installed but not found
+
+**Symptom.** `make airflow` failed instantly, all four threads at once:
 
 ```
 Exception in thread scheduler:
@@ -229,25 +242,28 @@ Exception in thread triggerer:
 FileNotFoundError: [Errno 2] No such file or directory: 'airflow'
 ```
 
-Читается как "Airflow не установлен". При этом двумя командами выше `make run`
-только что отработал этим же бинарем.
+It reads as "Airflow is not installed". Yet two commands earlier `make run` had
+just finished a job using that very binary.
 
-**Причина.** `airflow standalone` не выполняет компоненты сам - он запускает их
-подпроцессами и зовет коротким именем: `subprocess.Popen(["airflow", ...])`, то
-есть ищет по `PATH`. Makefile зовет бинарь по пути внутри venv. Родительскому
-процессу этого хватает, его детям нет: venv никто не активировал, в `PATH`
-никакого `airflow` нет.
+**Cause.** `airflow standalone` does not run the components itself — it starts
+them as subprocesses and calls them by their short name:
+`subprocess.Popen(["airflow", ...])`, that is, it searches `PATH`. The Makefile
+calls the binary by its path inside the venv. That is enough for the parent
+process but not for its children: nobody activated the venv, and there is no
+`airflow` anywhere on `PATH`.
 
-**Что сделано.** Venv добавлен в `PATH` для одной цели `airflow`. Глобально не
-правится намеренно: у генератора, dbt и сверки свои окружения, и питон Airflow
-не должен оказаться впереди чужого.
+**What was done.** The venv is added to `PATH` for the `airflow` target alone.
+It is deliberately not changed globally: the generator, dbt and the
+reconciliation have environments of their own, and Airflow's Python must not end
+up ahead of somebody else's.
 
-**Вывод.** Собственный `PATH` - самая незаметная часть окружения: команда
-работает у того, кто ее писал, потому что у него в оболочке уже нужное
-состояние. Ловится это только запуском на чистой машине - здесь поймалось при
-прогоне проекта из отдельного клона.
+**Lesson.** Your own `PATH` is the least visible part of the environment: a
+command works for the person who wrote it because their shell is already in the
+right state. The only way to catch this is to run on a clean machine — here it
+was caught by running the project from a separate clone.
 
-**Рядом нашлось второе.** Веб-интерфейс слушал `0.0.0.0` - умолчание Airflow, -
-хотя Postgres в этом же проекте намеренно прибит к `127.0.0.1` с комментарием
-про чужой Wi-Fi. Интерфейс с админским паролем в открытом виде тем более незачем
-показывать сети: добавлена переменная `AIRFLOW__API__HOST`.
+**A second one turned up alongside.** The web UI was listening on `0.0.0.0` —
+the Airflow default — while Postgres in this same project is deliberately nailed
+to `127.0.0.1` with a comment about other people's Wi-Fi. A UI with an admin
+password in plain sight has even less business being shown to the network: an
+`AIRFLOW__API__HOST` variable was added.

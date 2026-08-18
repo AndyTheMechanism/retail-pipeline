@@ -1,28 +1,30 @@
 version: 2
 
-# Снимок витрины продаж после каждого прогона - основание журнала ревизий.
+# A snapshot of the sales mart after every run — the foundation of the revision
+# log.
 #
-# Зачем он нужен. Витрина инкрементальная: пересчет окна переписывает строки
-# за прошлые дни, и прежнее значение исчезает бесследно. А весь проект стоит на
-# обещании, что вчерашнее число не меняется молча, - значит где-то должно
-# остаться, каким оно было. Снимок и есть это место.
+# Why it is needed. The mart is incremental: reprocessing the window rewrites
+# rows for past days, and the previous value disappears without a trace. Yet the
+# whole project rests on the promise that yesterday's number does not change
+# silently — so what it used to be has to survive somewhere. The snapshot is
+# that somewhere.
 #
-# Стратегия check, а не timestamp: у витрины нет колонки времени изменения, да
-# и не нужна она - сравнивать надо значения. Перечислены ровно те четыре, ради
-# которых журнал существует; изменение флага has_orders или числа позиций
-# ревизией не считается.
+# Strategy check, not timestamp: the mart has no modification-time column, and
+# it does not need one — it is the values that have to be compared. Listed here
+# are exactly the four the log exists for; a change to the has_orders flag or to
+# the line count does not count as a revision.
 #
-# Снимок снимается ПОСЛЕ сборки, а не до. Разница важна: он фиксирует не
-# намерение, а результат, и очередная версия появляется только тогда, когда
-# опубликованное число действительно поехало.
+# The snapshot is taken AFTER the build, not before. The difference matters: it
+# records the result rather than the intention, and the next version appears
+# only once a published number has actually moved.
 
 snapshots:
   - name: snap_store_daily_sales
     relation: ref('mart_store_daily_sales')
     description: >
-      История опубликованных значений витрины продаж. Служебная таблица, живет
-      в схеме ops; читать ее руками не нужно - для этого есть
-      marts.mart_store_daily_revisions.
+      The history of published values of the sales mart. A service table living
+      in the ops schema; there is no need to read it by hand — that is what
+      marts.mart_store_daily_revisions is for.
     config:
       schema: ops
       unique_key: [store_id, order_date]
@@ -30,38 +32,38 @@ snapshots:
       check_cols: [orders_count, revenue_gross, returns_amount, revenue_net]
     columns:
       - name: store_id
-        description: Магазин. Часть ключа снимка.
+        description: The store. Part of the snapshot key.
       - name: order_date
-        description: День покупки. Часть ключа снимка.
+        description: The day of purchase. Part of the snapshot key.
       - name: has_orders
-        description: Приехали ли заказы за этот день. За изменениями не следим.
+        description: Whether orders arrived for this day. Changes to it are not tracked.
       - name: orders_count
-        description: Заказы без отмененных. Одна из четырех отслеживаемых величин.
+        description: Orders excluding cancelled ones. One of the four tracked quantities.
       - name: orders_cancelled_count
-        description: Отмененные заказы. За изменениями не следим.
+        description: Cancelled orders. Changes to it are not tracked.
       - name: lines_count
-        description: Позиции после дедупликации. За изменениями не следим.
+        description: Order lines after deduplication. Changes to it are not tracked.
       - name: units_sold
-        description: Проданные штуки. За изменениями не следим.
+        description: Units sold. Changes to it are not tracked.
       - name: revenue_gross
-        description: Выручка брутто. Одна из четырех отслеживаемых величин.
+        description: Gross revenue. One of the four tracked quantities.
       - name: returns_amount
         description: >
-          Возвраты к дате заказа. Одна из четырех отслеживаемых величин и
-          обычно единственная, которая двигается.
+          Returns attributed to the order date. One of the four tracked
+          quantities, and usually the only one that moves.
       - name: returns_arrived_amount
-        description: Возвраты по дате приезда. За изменениями не следим.
+        description: Returns by the date they arrived. Changes to it are not tracked.
       - name: revenue_net
-        description: Выручка нетто. Одна из четырех отслеживаемых величин.
+        description: Net revenue. One of the four tracked quantities.
       - name: dbt_scd_id
-        description: Служебный идентификатор версии, ставит dbt.
+        description: A service identifier for the version, set by dbt.
       - name: dbt_updated_at
-        description: Служебная отметка времени версии, ставит dbt.
+        description: A service timestamp for the version, set by dbt.
       - name: dbt_valid_from
         description: >
-          С какого момента версия действует. Именно она становится датой
-          пересчета в журнале ревизий.
+          The moment from which the version is in force. This is what becomes
+          the recomputation date in the revision log.
       - name: dbt_valid_to
         description: >
-          До какого момента версия действовала. Пусто у текущей версии - той,
-          что сейчас лежит в витрине.
+          The moment up to which the version was in force. Empty for the current
+          version — the one now sitting in the mart.

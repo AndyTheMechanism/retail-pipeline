@@ -1,23 +1,24 @@
-"""Источник случайности.
+"""The source of randomness.
 
-Весь детерминизм проекта держится на этом файле, поэтому он маленький и
-отдельный.
+Every bit of determinism in this project rests on this file, which is why it is
+small and separate.
 
-Два правила, из которых все остальное следует.
+Two rules; everything else follows from them.
 
-**Никакого глобального `random`.** Каждый вызов получает свой экземпляр
-`random.Random`, засеянный от осмысленного набора ключей. Глобальное состояние
-означало бы, что результат зависит от порядка вызовов, а порядок вызовов
-меняется при первой же правке.
+**No global `random`.** Every call gets its own `random.Random` instance, seeded
+from a meaningful set of keys. Global state would mean the result depends on the
+order of calls, and the order of calls changes with the first edit anyone makes.
 
-**Сид выводится из строки через blake2b, а не через `hash()`.** Встроенный
-`hash()` для строк рандомизируется от запуска к запуску (PYTHONHASHSEED), и
-воспроизводимость на нем сломалась бы молча - самый неприятный вид поломки.
+**The seed is derived from a string with blake2b, not with `hash()`.** The
+built-in `hash()` for strings is randomised from run to run (PYTHONHASHSEED),
+and reproducibility built on it would have broken silently — the nastiest kind
+of breakage.
 
-Отсюда следствие, ради которого все и сделано: поток именуется. Заказы за день
-берут поток "orders", трафик - "traffic", и добавление нового случайного вызова
-в один поток не сдвигает другой. Без этого любая правка генератора меняла бы
-все данные разом, и сравнить "было / стало" было бы нельзя.
+Hence the property it was all built for: streams are named. Orders for a day
+take the "orders" stream, traffic takes "traffic", and adding a new random call
+to one stream does not shift the other. Without that, any edit to
+the generator would change all the data at once, and "before / after" could not
+be compared.
 """
 
 from __future__ import annotations
@@ -27,12 +28,12 @@ import random
 
 
 def derive_seed(*parts: object) -> int:
-    """Устойчивый 64-битный сид из произвольных ключей."""
+    """A stable 64-bit seed from arbitrary keys."""
     material = ":".join(str(p) for p in parts).encode("utf-8")
     digest = hashlib.blake2b(material, digest_size=8).digest()
     return int.from_bytes(digest, "big")
 
 
 def stream(*parts: object) -> random.Random:
-    """Отдельный генератор для именованного потока."""
+    """A separate generator for a named stream."""
     return random.Random(derive_seed(*parts))

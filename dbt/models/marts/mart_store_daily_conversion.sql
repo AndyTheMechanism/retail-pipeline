@@ -1,34 +1,36 @@
--- Конверсия по магазину и дню: чеки на посетителя.
+-- Conversion per store and day: orders per visitor.
 --
--- Числитель - офлайн-заказы без отмененных. Офлайн, потому что дверной счетчик
--- не видит ни сайт, ни приложение, и смешение дало бы конверсию, растущую от
--- роста онлайна. Без отмененных, потому что отмененный заказ не чек, - и по
--- тому же набору заказов считается выручка в соседней витрине: одна витрина -
--- один набор.
+-- The numerator is offline orders, cancelled ones excluded. Offline, because
+-- the door counter sees neither the web nor the app, and mixing them in would
+-- give a conversion that grows as online grows. Cancelled ones excluded,
+-- because a cancelled order is not a sale — and revenue in the neighbouring
+-- mart is counted over the same set of orders: one mart, one set of orders.
 --
--- Замер, который стоит знать при чтении этих чисел: синтетика строит трафик
--- от офлайн-заказов вместе с отмененными, поэтому измеренная конверсия
--- систематически ниже заложенной примерно на долю отмен, около 3%. На
--- срабатывание порога "чеки больше трафика на 0,95" это не влияет никак, а
--- вот проверку на диапазон пришлось бы отсчитывать от смещенного числа, а не
--- от заложенного.
+-- A measurement worth knowing when reading these numbers: the synthetic data
+-- builds footfall from offline orders including the cancelled ones, so the
+-- measured conversion sits systematically below the intended one by roughly the
+-- cancellation share, about 3%. It has no effect at all on whether the "orders
+-- above traffic × 0.95" threshold fires, but a range check would have to be
+-- counted from the shifted number rather than from the intended one.
 --
--- Ноль посетителей при живых чеках - не ноль, а сообщение источника о том, что
--- прибор не считал. Поэтому nullif и null в результате, а не деление на ноль и
--- не бесконечность. Сам флаг качества здесь не выставляется: витрина отдает
--- ингредиенты, а суждение выносит гейт.
+-- Zero visitors with live orders is not a zero but a message from the source
+-- that the device was not counting. Hence the nullif and a null in the result,
+-- rather than a division by zero or an infinity. The quality flag itself is not
+-- raised here: the mart hands out the ingredients, the judgement is made by the
+-- gate.
 --
--- ОКНА ПЕРЕСЧЕТА У ЭТОЙ ВИТРИНЫ НЕТ, и это главное, что стоит про нее знать.
+-- THIS MART HAS NO REPROCESSING WINDOW, and that is the main thing to know
+-- about it.
 --
--- Витрина продаж пересобирает 28 дней назад, потому что возврат приезжает
--- позже покупки и меняет выручку прошлого. Здесь менять задним числом нечего:
--- ни трафик, ни заказы за прошлый день не переписываются - у них нет второй
--- даты, по которой они могли бы приехать позже. Поэтому прогон трогает ровно
--- целевую дату.
+-- The sales mart rebuilds 28 days backwards, because a return arrives later
+-- than the purchase and changes the revenue of a past day. Here there is
+-- nothing to change after the fact: neither footfall nor orders for a past day
+-- are rewritten — they have no second date on which they could arrive later. So
+-- a run touches exactly the target date.
 --
--- Отсюда правило, которое дороже самой настройки: окно пересчета - не общая
--- настройка пайплайна, а свойство конкретной витрины. Ставить его везде
--- одинаково значит либо пересчитывать лишнее, либо не досчитывать нужное.
+-- Hence a rule worth more than the setting itself: the reprocessing window is
+-- not a pipeline-wide setting but a property of a particular mart. Setting it
+-- the same everywhere means either computing too much or not computing enough.
 
 {{ config(
     materialized = 'incremental',

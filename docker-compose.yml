@@ -1,15 +1,15 @@
-# Один сервис - Postgres. Airflow ставится локально в venv, в контейнере его
-# нет.
+# One service — Postgres. Airflow is installed locally in a venv; there is no
+# container for it.
 #
-# Официальный compose-файл Airflow не берется намеренно: восемь сервисов и
-# больше двухсот строк, объяснить их за минуту нельзя, а объяснимость здесь -
-# требование к проекту, а не пожелание.
+# The official Airflow compose file is deliberately not used: eight services
+# and more than two hundred lines, which cannot be explained in a minute, and
+# being explainable is a requirement here, not a nice-to-have.
 
 services:
   postgres:
-    # Имя образа полное, а не короткое: rootless podman на короткое имя
-    # переспрашивает, из какого реестра тянуть, и неинтерактивный `make up`
-    # на этом встает.
+    # The image name is the full one rather than the short one: rootless podman
+    # asks which registry to pull a short name from, and a non-interactive
+    # `make up` stalls on that question.
     image: docker.io/library/postgres:16
     container_name: retail-pipeline-db
     environment:
@@ -17,22 +17,22 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pipeline}
       POSTGRES_DB: warehouse
     ports:
-      # Слушать только localhost. Пароль по умолчанию тривиальный - он и
-      # должен быть таким, чтобы проект заводился без настройки, - но тогда
-      # база не должна торчать наружу с чужого Wi-Fi.
+      # Listen on localhost only. The default password is trivial — and it has
+      # to be, so the project starts with no configuration — but then the
+      # database must not be exposed to somebody else's Wi-Fi.
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      # :Z - метка SELinux. Без нее на Fedora контейнер не прочитает
-      # каталог инициализации, а ошибка будет выглядеть как "база пустая".
+      # :Z is the SELinux label. Without it the container on Fedora cannot read
+      # the init directory, and the error looks like "the database is empty".
       - ./db/init:/docker-entrypoint-initdb.d:ro,Z
     healthcheck:
-      # -h 127.0.0.1 обязательно. Пока выполняются скрипты инициализации,
-      # Postgres поднимает временный сервер на одном unix-сокете, без TCP.
-      # Проверка через сокет засчитает его как готовый, после чего сервер
-      # уйдет на перезапуск - и следующая же команда получит "the database
-      # system is shutting down". По TCP временный сервер не отвечает, и
-      # готовность становится честной.
+      # -h 127.0.0.1 is mandatory. While the init scripts are running, Postgres
+      # brings up a temporary server on a unix socket alone, with no TCP. A
+      # check through the socket counts it as ready, after which the server goes
+      # off to restart — and the very next command gets "the database system is
+      # shutting down". The temporary server does not answer over TCP, which
+      # makes readiness honest.
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER:-pipeline} -d warehouse"]
       interval: 3s
       timeout: 3s

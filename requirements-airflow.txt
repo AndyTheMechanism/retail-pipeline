@@ -1,17 +1,18 @@
-# Окружение Airflow, четвертое и последнее.
+# The Airflow environment, the fourth and last.
 #
-# Ставится по официальному constraints-файлу - см. цель venv-airflow в
-# Makefile. Это не перестраховка: у Airflow около двухсот транзитивных
-# зависимостей, и без пинов резолвер соберет комбинацию, которую никто никогда
-# не проверял. Официальный файл описывает ровно ту, на которой Airflow этой
-# версии тестировали.
+# Installed against the official constraints file — see the venv-airflow target
+# in the Makefile. That is not over-caution: Airflow has around two hundred
+# transitive dependencies, and without pins the resolver assembles a combination
+# nobody has ever tested. The official file describes exactly the one this
+# version of Airflow was tested on.
 #
-# Адрес файла собирается в Makefile, потому что он зависит сразу от двух вещей:
-# от версии Airflow и от версии интерпретатора. Прибить его сюда строкой значило
-# бы сломать установку всем, у кого Python другой версии, а их большинство.
-# Версия Airflow при этом живет здесь, в одном месте, и Makefile берет ее
-# отсюда.
+# The URL of that file is put together in the Makefile, because it depends on
+# two things at once: the Airflow version and the interpreter version. Nailing
+# it down here as a string would break the install for everyone on a different
+# Python, and that is most people. The Airflow version itself lives here, in
+# one place, and the Makefile reads it from this file.
 #
-# Экстра postgres нужна ради драйвера для метабазы: она живет во второй базе
-# того же контейнера, что и хранилище, и отдельного сервиса под нее нет.
+# The postgres extra is there for the metadata database driver: it lives in a
+# second database inside the same container as the warehouse, and there is no
+# separate service for it.
 apache-airflow[postgres]==3.3.1

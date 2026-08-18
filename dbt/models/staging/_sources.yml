@@ -4,133 +4,138 @@ sources:
   - name: raw
     schema: raw
     description: >
-      Сырой слой - выгрузка источника как она есть, вместе с дефектами.
-      Первичных ключей и ограничений уникальности здесь нет намеренно:
-      среди заложенных дефектов есть дубли строк, и ограничение сделало бы
-      дефект незагружаемым. Подробности - в db/schema/01_raw.sql.
+      The raw layer — the source export exactly as it arrives, defects included.
+      There are deliberately no primary keys and no uniqueness constraints here:
+      doubled rows are one of the planted defects, and a constraint would make
+      that defect impossible to load. Details are in db/schema/01_raw.sql.
 
-    # Свежести источника здесь нет, и это не пропуск. Штатный dbt source
-    # freshness смотрит на колонку времени загрузки, а ее в сыром слое нет:
-    # источник отдает бизнес-даты, а не отметку о том, когда строка приехала.
-    # Проверка свежести живет своим тестом - tests/assert_source_is_fresh.sql.
+    # There is no source freshness block here, and that is not an oversight. The
+    # built-in dbt source freshness looks at a load-timestamp column, and the
+    # raw layer has none: the source hands over business dates, not a record of
+    # when the row arrived. The freshness check lives in a test of its own —
+    # tests/assert_source_is_fresh.sql.
 
     tables:
       - name: stores
-        description: Справочник магазинов. Единственная таблица без партиций, перегружается целиком.
+        description: Store reference table. The only table without partitions, reloaded in full.
         columns:
           - name: store_id
-            description: Идентификатор магазина. Сквозной по всему проекту.
+            description: Store identifier. The same one throughout the project.
           - name: store_code
-            description: Код точки в виде S0001. Витринами не используется, живет для читаемости.
+            description: Store code in the form S0001. The marts do not use it; it exists for readability.
           - name: city
-            description: Город. Один из тридцати, справочный атрибут.
+            description: City. One of thirty, a reference attribute.
           - name: store_format
-            description: Формат точки - малый, средний или большой. Определяет базовый поток заказов.
+            description: Store format — small, medium or large. It sets the store's baseline order volume.
           - name: opened_on
             description: >
-              Дата открытия. До нее у магазина нет ни заказов, ни трафика, и на
-              ней стоит зерно обеих витрин: 12 магазинов из 120 открылись внутри
-              горизонта, и их пустые дни - не пропущенные данные.
+              Opening date. Before it the store has neither orders nor footfall,
+              and the grain of both marts rests on it: 12 stores out of 120
+              opened inside the horizon, and their empty days are not missing
+              data.
 
       - name: orders
-        description: Заказы. Партиция по order_date. Статус проставлен уже в источнике.
+        description: Orders. Partitioned by order_date. The status is already set in the source.
         columns:
           - name: order_id
             description: >
-              Идентификатор заказа. Кодирует дату и магазин, поэтому по нему
-              однозначно восстанавливается партиция, а возврат связывается с
-              заказом без обращения к таблице заказов.
+              Order identifier. It encodes the date and the store, so the
+              partition can be recovered from it unambiguously, and a return can
+              be tied to its order without touching the orders table.
           - name: store_id
-            description: Магазин, оформивший заказ.
+            description: The store that placed the order.
           - name: order_ts
-            description: Отметка времени заказа, час от 9 до 21. Витринами не используется - зерно дневное.
+            description: Order timestamp, hour between 9 and 21. The marts do not use it — the grain is daily.
           - name: order_date
-            description: Дата заказа. Ключ партиции.
+            description: Order date. The partition key.
           - name: channel
             description: >
-              Канал - офлайн, сайт или приложение. К дверному счетчику относится
-              только офлайн, и из-за этого канал участвует в расчете конверсии.
+              Channel — offline, web or app. The door counter sees only
+              offline, and that is why the channel takes part in the conversion
+              calculation.
           - name: status
             description: >
-              Оформлен или отменен. Статус финален уже в источнике: отмена
-              никогда не меняет вчерашнее число.
+              Placed or cancelled. The status is already final in the source: a
+              cancellation never changes yesterday's number.
           - name: customer_id
             description: >
-              Идентификатор покупателя, заполнен у 70% заказов. Оставлен как
-              задел под когорты; ни одна текущая витрина его не использует.
+              Customer identifier, filled in on 70% of orders. Left as
+              groundwork for cohorts; no current mart uses it.
 
       - name: order_items
-        description: Позиции заказа. Партиция по order_date. Здесь лежат дубли выгрузки и выбросы.
+        description: Order lines. Partitioned by order_date. This is where the export duplicates and the outliers sit.
         columns:
           - name: order_id
-            description: Заказ, к которому относится позиция.
+            description: The order the line belongs to.
           - name: order_date
             description: >
-              Дата заказа, денормализована намеренно: без нее удаление партиции
-              пришлось бы делать джойном к заказам.
+              Order date, denormalised on purpose: without it, dropping a
+              partition would take a join to the orders table.
           - name: line_no
-            description: Номер позиции внутри заказа. Вместе с order_id образует зерно.
+            description: Line number within the order. Together with order_id it forms the grain.
           - name: sku
             description: >
-              Непрозрачный код позиции. Ни категории, ни бренда, ни закупочной
-              цены здесь нет и не будет - это категорийный менеджмент, другая
-              профессия.
+              An opaque item code. There is no category, no brand and no cost
+              price here, and there will not be — that is category management,
+              a different profession.
           - name: quantity
-            description: Количество. Ноль встречается - это заложенный выброс.
+            description: Quantity. Zero does occur — that is a planted outlier.
           - name: unit_price
-            description: Цена за единицу, от 199 до 19990.
+            description: Price per unit, from 199 to 19990.
           - name: line_amount
             description: >
-              Сумма позиции. Может быть отрицательной - это тоже заложенный
-              выброс, и он намеренно доезжает до витрины.
+              Line amount. It can be negative — that is another planted
+              outlier, and it deliberately makes it all the way to the mart.
 
       - name: returns
         description: >
-          Возвраты. Партиция по returned_date, а не по дате заказа: возврат
-          приезжает своим днем и меняет выручку прошлого.
+          Returns. Partitioned by returned_date rather than by the order date:
+          a return arrives on its own day and changes the revenue of an earlier
+          one.
         columns:
           - name: return_id
-            description: Идентификатор возврата, выводится из идентификатора заказа.
+            description: Return identifier, derived from the order identifier.
           - name: order_id
-            description: Заказ, к которому относится возврат.
+            description: The order the return belongs to.
           - name: order_date
-            description: Дата исходного заказа. К ней возврат относится в витрине продаж.
+            description: Date of the original order. This is the date the sales mart attributes the return to.
           - name: line_no
-            description: Позиция заказа, которую вернули.
+            description: The order line that was returned.
           - name: returned_date
             description: >
-              Дата приезда возврата. Ключ партиции. Отстает от даты заказа на
-              0-30 дней, медиана 2 дня.
+              The date the return arrived. The partition key. It lags the order
+              date by 0-30 days, median 2 days.
           - name: quantity
-            description: Возвращенное количество, не больше купленного.
+            description: The quantity returned, never more than was bought.
           - name: returned_amount
-            description: Сумма возврата - цена за единицу на возвращенное количество.
+            description: Return amount — unit price times the quantity returned.
 
       - name: cancellations
-        description: Отмены. Партиция по cancelled_date, он на 0-2 дня позже даты заказа.
+        description: Cancellations. Partitioned by cancelled_date, which is 0-2 days after the order date.
         columns:
           - name: cancellation_id
-            description: Идентификатор отмены. Совпадает с идентификатором заказа.
+            description: Cancellation identifier. It matches the order identifier.
           - name: order_id
-            description: Отмененный заказ.
+            description: The cancelled order.
           - name: order_date
-            description: Дата исходного заказа.
+            description: Date of the original order.
           - name: cancelled_date
             description: >
-              Дата отмены. Ключ партиции. У заказов последних двух дней горизонта
-              строки отмены может не быть - ее время не пришло, и проверки это
-              учитывают.
+              Cancellation date. The partition key. Orders from the last two
+              days of the horizon may have no cancellation row yet — its time
+              has not come, and the checks account for that.
           - name: reason
-            description: Причина отмены из источника - одна из четырех.
+            description: Cancellation reason from the source — one of four.
 
       - name: store_traffic
-        description: Дневной трафик точек. Партиция по traffic_date. Знаменатель конверсии.
+        description: Daily footfall per store. Partitioned by traffic_date. The denominator of conversion.
         columns:
           - name: store_id
-            description: Магазин.
+            description: The store.
           - name: traffic_date
-            description: Дата. Ключ партиции.
+            description: The date. The partition key.
           - name: visitors
             description: >
-              Посетители по дверному счетчику. Ноль означает не отсутствие людей,
-              а неработающий прибор, и суждение об этом выносит флаг качества.
+              Visitors as counted by the door counter. A zero means a dead
+              device rather than an absence of people, and that judgement is
+              passed by a quality flag.

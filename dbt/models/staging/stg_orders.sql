@@ -1,11 +1,11 @@
--- Шапка чека.
+-- Order header.
 --
--- Два булевых признака вместо разбора строковых значений в каждой модели ниже.
--- Сами значения остаются русскими: заменить "офлайн" на offline - значит молча
--- переименовать факт источника, и тогда сверка витрины с сырьем потребует
--- держать словарь соответствий в голове при каждом сравнении. Имена колонок
--- английские, значения исходные - половинчатая англификация была бы хуже
--- любого из двух чистых вариантов.
+-- Two boolean flags instead of comparing string values in every model
+-- downstream. The values themselves are passed through exactly as the source
+-- sends them: remapping them onto a vocabulary of our own would silently rename
+-- a fact of the source, and every reconciliation of a mart against the raw
+-- layer would then mean holding a mapping in your head. The column names are
+-- ours to choose, the values are not.
 
 with source as (
     select * from {{ source('raw', 'orders') }}
@@ -20,11 +20,11 @@ select
     status,
     customer_id,
 
-    status = 'отменен' as is_cancelled,
+    status = 'cancelled' as is_cancelled,
 
-    -- Офлайн выделен отдельно, потому что дверной счетчик считает только его.
-    -- Сайт и приложение к трафику точки отношения не имеют, и смешение дало бы
-    -- конверсию, растущую от роста онлайна.
-    channel = 'офлайн' as is_offline
+    -- Offline is singled out because the door counter sees nothing else. Web
+    -- and app have nothing to do with a store's footfall, and mixing them in
+    -- would give a conversion that grows as online grows.
+    channel = 'offline' as is_offline
 
 from source

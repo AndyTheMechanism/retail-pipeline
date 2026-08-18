@@ -1,15 +1,16 @@
-"""Загрузка в Postgres.
+"""Loading into Postgres.
 
-Единственный способ записи здесь - **delete-and-insert по ключу партиции.**
-Не `insert`, не `upsert`, не `truncate` всей таблицы.
+The only way anything is written here is **delete-and-insert by partition
+key.** Not `insert`, not `upsert`, not `truncate` of the whole table.
 
-Почему именно так, в одной фразе: повторный прогон за ту же дату должен давать
-то же состояние, а не задвоение и не потерю соседних дат. `insert` задваивает,
-`truncate` уничтожает соседние партиции, `upsert` требует ключа - а ключа в
-сыром слое нет намеренно, потому что там лежат дубли источника.
+Why, in one sentence: a repeat run for the same date has to leave the same
+state behind, not doubled rows and not missing neighbours. `insert` doubles,
+`truncate` destroys the neighbouring partitions, `upsert` needs a key — and
+the raw layer deliberately has none, because it holds the source's own
+duplicates.
 
-Это же свойство делает безопасным пересчет окна в ежедневном прогоне:
-пересобрать день можно столько раз, сколько нужно, и результат не поедет.
+The same property is what makes reprocessing the window in a daily run safe: a
+day can be rebuilt as many times as needed and the result does not drift.
 """
 
 from __future__ import annotations
@@ -29,8 +30,8 @@ CANCELLATION_COLUMNS = ["cancellation_id", "order_id", "order_date", "cancelled_
 TRAFFIC_COLUMNS = ["store_id", "traffic_date", "visitors"]
 STORE_COLUMNS = ["store_id", "store_code", "city", "store_format", "opened_on"]
 
-# Таблица и колонка, по которой режется партиция. Один список - один источник
-# правды: и загрузка, и проверка целостности ходят сюда.
+# The table and the column the partition is cut on. One list, one source of
+# truth: both the load and the integrity check come here for it.
 PARTITIONED_TABLES = {
     "raw.orders": "order_date",
     "raw.order_items": "order_date",
@@ -56,13 +57,13 @@ def connect() -> psycopg.Connection:
 
 
 def apply_schema(conn: psycopg.Connection) -> None:
-    """DDL живет в .sql, а не в строках Python: его читают и ревьюят глазами."""
+    """DDL lives in .sql, not in Python strings: it is read and reviewed by eye."""
     conn.execute(SCHEMA_FILE.read_text(encoding="utf-8"))
     conn.commit()
 
 
 def load_stores(conn: psycopg.Connection, stores) -> None:
-    """Справочник перегружается целиком - он маленький и не партиционирован."""
+    """The reference table is reloaded whole — it is small and not partitioned."""
     with conn.cursor() as cur:
         cur.execute("TRUNCATE raw.stores")
         with cur.copy("COPY raw.stores (%s) FROM STDIN" % ", ".join(STORE_COLUMNS)) as cp:
@@ -72,7 +73,7 @@ def load_stores(conn: psycopg.Connection, stores) -> None:
 
 
 def load_partition(conn: psycopg.Connection, table: str, day: date, columns: list[str], rows) -> int:
-    """Заменить содержимое одной партиции. Возвращает число записанных строк."""
+    """Replace the contents of one partition. Returns the number of rows written."""
     date_column = PARTITIONED_TABLES[table]
     written = 0
     with conn.cursor() as cur:
@@ -85,11 +86,11 @@ def load_partition(conn: psycopg.Connection, table: str, day: date, columns: lis
 
 
 def table_digest(conn: psycopg.Connection, table: str) -> tuple[int, str]:
-    """Число строк и контрольная сумма содержимого таблицы.
+    """Row count and checksum of a table's contents.
 
-    Сумма считается по отсортированным хешам строк, то есть не зависит от
-    физического порядка. Именно это и надо проверять: два прогона обязаны дать
-    одинаковое *содержимое*, а не одинаковый порядок страниц на диске.
+    The checksum is computed over sorted row hashes, so it does not depend on
+    physical order. That is exactly what has to be checked: two runs must give
+    the same *contents*, not the same order of pages on disk.
     """
     row = conn.execute(
         f"""

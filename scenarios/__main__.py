@@ -1,10 +1,10 @@
-"""Командный интерфейс сценариев.
+"""Command-line interface to the scenarios.
 
     python -m scenarios late-return
     python -m scenarios missing-partition
     python -m scenarios broken-counter
 
-Обычно зовется через make - см. цели scenario-*.
+Usually called through make — see the scenario-* targets.
 """
 
 from __future__ import annotations
@@ -17,26 +17,27 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from generator import defects as defect_map  # noqa: E402  - после правки sys.path
+from generator import defects as defect_map  # noqa: E402  - after the sys.path edit
 from generator.config import Config  # noqa: E402
 from generator.load import connect  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# Даты сценариев вычисляются из карты дефектов, а не записаны числами.
+# Scenario dates are computed from the defect map rather than written out as
+# literals.
 #
-# Хардкод здесь был бы тем самым тихим враньем, против которого построен весь
-# проект: смени сид или горизонт - и сценарий начнет показывать не то, что
-# обещает, ничем этого не выдав. Генератор знает, где лежат дефекты, - у него и
-# спрашиваем.
+# Hardcoding them here would be exactly the silent lie the whole project is
+# built against: change the seed or the horizon, and the scenario starts showing
+# something other than what it promises without giving any sign of it. The
+# generator knows where the defects are — so we ask it.
 CONFIG = Config()
 
 
 def _broken_days() -> set[date]:
-    """Дни, за которые источник не отдал чего-нибудь целиком.
+    """Days where the source did not deliver something in full.
 
-    Прогон за такой день встает на свежести, поэтому сценарии, которым нужен
-    здоровый день, обходят их стороной.
+    A run for such a day stops on freshness, so scenarios that need a healthy
+    day steer clear of them.
     """
     out: set[date] = set()
     for days in defect_map.missing_partitions(CONFIG).values():
@@ -45,10 +46,10 @@ def _broken_days() -> set[date]:
 
 
 def _clean_tail(count: int) -> list[date]:
-    """Последние подряд идущие здоровые дни горизонта.
+    """The last stretch of consecutive healthy days in the horizon.
 
-    Хвост берется именно с конца намеренно: возвраты, которые сценарий уберет,
-    возвращает само проигрывание, и отдельный шаг восстановления не нужен.
+    Taking the tail from the very end is deliberate: the replay itself puts back
+    the returns the scenario removes, so no separate restore step is needed.
     """
     bad = _broken_days()
     days: list[date] = []
@@ -57,18 +58,18 @@ def _clean_tail(count: int) -> list[date]:
         days = [day] + days if day not in bad else []
         day -= timedelta(days=1)
     if len(days) < count:
-        raise SystemExit("В горизонте нет %d здоровых дней подряд" % count)
+        raise SystemExit("The horizon holds no %d healthy days in a row" % count)
     return days
 
 
 def _counter_day() -> date:
-    """Здоровый день внутри окна битого счетчика."""
+    """A healthy day inside a broken-counter window."""
     bad = _broken_days()
     for window in defect_map.broken_counter_windows(CONFIG):
         day = window.start + (window.end - window.start) // 2
         if day not in bad:
             return day
-    raise SystemExit("В данных нет окна битого счетчика")
+    raise SystemExit("The data holds no broken-counter window")
 
 
 _TAIL = _clean_tail(5)
@@ -82,9 +83,9 @@ HEALTHY_DATE = next(
 
 BROKEN_COUNTER_DATE = _counter_day()
 
-# Сценарий обязан уметь провалиться. Показ, который всегда зеленый, ничего не
-# доказывает - это ровно та претензия, которую проект предъявляет чужим
-# проверкам в INCIDENTS.md, и она не перестает быть верной для своих.
+# A scenario has to be able to fail. A demo that is always green proves
+# nothing — that is exactly the complaint this project makes about other
+# people's checks in INCIDENTS.md, and it holds just as well for its own.
 FAILURES: list[str] = []
 
 
@@ -101,7 +102,7 @@ def step(text: str) -> None:
 
 
 def run_pipeline(day: date, expect_failure: bool = False) -> bool:
-    """Прогон пайплайна за дату - той же командой, что позвал бы человек."""
+    """Run the pipeline for a date — with the command a person would use."""
     print("  $ make run DATE=%s" % day)
     result = subprocess.run(
         ["make", "run", "DATE=%s" % day],
@@ -114,12 +115,12 @@ def run_pipeline(day: date, expect_failure: bool = False) -> bool:
         if "DagRun Finished" in line:
             print("    %s" % line.split("DagRun Finished:")[-1].split(", run_id")[0].strip())
         if "Got 1 result, configured to fail" in line:
-            print("    тест вернул строки, значит цепочка встает")
-    print("    код возврата: %d%s" % (result.returncode, " (ожидаемо)" if expect_failure else ""))
+            print("    the test returned rows, so the chain stops")
+    print("    exit code: %d%s" % (result.returncode, " (expected)" if expect_failure else ""))
     if ok == expect_failure:
-        note = "прогон за %s: ожидалось %s, получилось обратное" % (
-            day, "падение" if expect_failure else "успех")
-        print("    НЕОЖИДАННО: %s" % note)
+        note = "run for %s: expected %s, got the opposite" % (
+            day, "failure" if expect_failure else "success")
+        print("    UNEXPECTED: %s" % note)
         FAILURES.append(note)
     return ok
 
@@ -138,7 +139,7 @@ def execute(query: str, params: tuple = ()) -> None:
 def money(value) -> str:
     if value is None:
         return "-"
-    return f"{value:,.2f}".replace(",", " ")
+    return f"{value:,.2f}"
 
 
 def mart_digest() -> str:
@@ -154,44 +155,44 @@ def mart_digest() -> str:
 
 
 def late_return() -> int:
-    """Вчерашнее число изменилось, и в журнале видно, из-за чего."""
-    banner("Сценарий: поздний возврат")
+    """Yesterday's number moved, and the log shows what moved it."""
+    banner("Scenario: late return")
     print("""
-Возврат приезжает через несколько дней после покупки и уменьшает выручку того
-дня, когда покупка была. Значит опубликованное вчера число меняется - и весь
-проект стоит на том, что оно меняется не молча.
+A return arrives a few days after the purchase and reduces the revenue of the
+day the purchase was made — so yesterday's published number moves, and the
+whole project rests on it not moving silently.
 
-Показать это на готовых данных нельзя: в сыром слое уже лежит вся история, и
-витрина сразу считается с учетом всех возвратов. Поэтому сценарий отматывает
-время назад - убирает возвраты, которые "еще не приехали", - и проигрывает
-несколько дней подряд, как это делал бы планировщик.
+This cannot be shown on finished data: the raw layer already holds the entire
+history, so the mart is computed with every return from the start. So the
+scenario winds time back — it removes the returns that "have not arrived yet" —
+and replays several days in a row the way a scheduler would.
 
-Удаленные партиции возвращает само проигрывание: горизонт кончается 30 июня,
-и к концу сценария сырой слой в точности такой же, каким был.""")
+The replay itself restores the deleted partitions: the horizon ends on 30 June,
+and by the end of the scenario the raw layer is exactly as it was.""")
 
-    step("Журнал ревизий очищается: сценарий показывает историю с нуля")
+    step("The revision log is cleared: the history fills from nothing")
     execute("truncate table ops.snap_store_daily_sales")
 
-    step("Возвраты, приехавшие позже %s, убираются - как будто их еще нет" % LATE_RETURN_START)
+    step("Returns that arrived after %s are removed — as if they were not here yet" % LATE_RETURN_START)
     removed = sql(
         "select count(*), coalesce(sum(returned_amount), 0) from raw.returns where returned_date > %s",
         (LATE_RETURN_START,),
     )[0]
-    print("  убрано возвратов: %d на %s руб" % (removed[0], money(removed[1])))
+    print("  returns removed: %d worth %s RUB" % (removed[0], money(removed[1])))
     execute("delete from raw.returns where returned_date > %s", (LATE_RETURN_START,))
 
-    step("Прогон за %s - это состояние мира на тот день" % LATE_RETURN_START)
+    step("Run for %s — the state of the world on that day" % LATE_RETURN_START)
     run_pipeline(LATE_RETURN_START)
 
-    step("Проигрываю следующие дни: каждый привозит свою партию возвратов")
+    step("Replaying the days that follow: each brings its own batch of returns")
     day = LATE_RETURN_START + timedelta(days=1)
     while day <= LATE_RETURN_END:
         run_pipeline(day)
         day += timedelta(days=1)
 
-    banner("Что попало в журнал ревизий")
+    banner("What landed in the revision log")
     total = sql("select count(*) from marts.mart_store_daily_revisions")[0][0]
-    print("\nСтрок в журнале: %d" % total)
+    print("\nRows in the log: %d" % total)
 
     reasons = sql(
         """
@@ -200,13 +201,14 @@ def late_return() -> int:
         group by reason order by 2 desc
         """
     )
-    print("\n  %-26s %8s  %s" % ("причина", "строк", "суммарная дельта"))
+    print("\n  %-26s %8s  %s" % ("reason", "rows", "total delta"))
     for reason, count, delta in reasons:
         print("  %-26s %8d  %s" % (reason, count, money(delta)))
 
-    # Разложение по знаку - не украшение отчета, а защита от неверного вывода.
-    # Итоговую дельту тянет сравнить с суммой убранных возвратов, и она не
-    # сойдется: это разные величины, и почему - написано ниже.
+    # The split by sign is not decoration but a guard against a wrong reading.
+    # The total delta invites comparison with the sum of the returns removed,
+    # and it will not add up: those are different quantities, and the reason is
+    # spelled out below.
     split = sql(
         """
         select
@@ -217,41 +219,42 @@ def late_return() -> int:
         from marts.mart_store_daily_revisions
         """
     )[0]
-    print("\n  из них вниз: %d строк на %s" % (split[0], money(split[1])))
-    print("      и вверх: %d строк на %s" % (split[2], money(split[3])))
+    print("\n  of these, downward: %d rows worth %s" % (split[0], money(split[1])))
+    print("          and upward: %d rows worth %s" % (split[2], money(split[3])))
 
-    # Объяснение печатается по факту, а не на всякий случай. Ревизии вверх
-    # бывают не всегда, и рассказывать про них, когда их ноль, значило бы
-    # объяснять то, чего не произошло, - ровно та подмена факта интерпретацией,
-    # против которой построен проект.
+    # The explanation is printed when the facts call for it, not just in case.
+    # Upward revisions do not always happen, and describing them when there are
+    # none would explain something that did not occur — exactly the substitution
+    # of interpretation for fact this project is built against.
     if split[2]:
         print("""
-Ревизии вверх выглядят странно и объясняются устройством показа. Первый снимок
-снимается со всей витрины, а прогон за первый день пересобирает только окно
-назад - значит дни ПОСЛЕ него остались в снимке с прежними значениями, где
-удаленные возвраты еще учтены. Когда очередь доходит до такого дня, он
-пересобирается "по состоянию на тогда", выручка поднимается, а следующими
-прогонами снова опускается по мере приезда возвратов.""")
+Upward revisions look odd and are explained by how the demo is built. The first
+snapshot is taken over the whole mart, while the run for the first day rebuilds
+only a window backwards — so the days AFTER it keep the values they had in the
+snapshot, the ones that still account for the deleted returns. When such a day's
+turn comes it is rebuilt as of then, its revenue goes up, and later runs bring
+it back down as the returns arrive.""")
     else:
         print("""
-Ревизий вверх нет, и это тоже объяснимо. Они появляются, когда витрина к началу
-сценария собрана с полными возвратами: дни ПОСЛЕ первого прогона остаются в
-снимке заниженными, и проигрывание сначала поднимает их. Здесь витрина собиралась
-уже без них - значит движение осталось односторонним, вниз, по мере приезда.""")
+There are no upward revisions, and that too has an explanation. They show up
+when the mart goes into the scenario built with the full set of returns: the
+days AFTER the first run sit understated in the snapshot, and the replay lifts
+them first. Here the mart had already been built without those returns — so the
+movement stayed one-way, downward, as they arrived.""")
 
     if removed[0]:
         print("""
-Прямое следствие, которое стоит помнить: суммарную дельту журнала нельзя
-сравнивать с суммой убранных возвратов - это разные величины. Убрано %s брутто;
-журнал показывает движение опубликованных чисел относительно базы, которая сама
-не была одним моментом времени.""" % money(removed[1]))
+A direct consequence worth remembering: the total delta of the log cannot be
+compared with the sum of the returns removed — those are different quantities.
+%s gross was removed; the log shows the movement of published numbers against a
+baseline that was not itself a single moment in time.""" % money(removed[1]))
     else:
         print("""
-Убирать было нечего: возвраты за хвостом отсутствовали еще до старта. Так бывает
-при повторном запуске сценария или после прерванного - проигрывание вернет их в
-сырой слой, но исходное состояние витрины было уже другим. Числа выше верны для
-этого прогона; чтобы увидеть сценарий целиком, начните с полного сырья:
-make seed, затем make models.""")
+There was nothing to remove: the returns past the tail were already gone before
+the start. That happens on a repeat run of the scenario, or after an interrupted
+one — the replay puts them back into the raw layer, but the mart started from a
+different state. The numbers above are correct for this run; to see the scenario
+whole, start from a full raw layer: make seed, then make models.""")
 
     rows = sql(
         """
@@ -261,16 +264,16 @@ make seed, затем make models.""")
         order by revenue_net_delta limit 5
         """
     )
-    print("\nПять самых крупных изменений:")
-    print("  %-5s %-12s %-20s %14s %14s %14s" % ("маг.", "день", "пересчитано", "было", "стало", "дельта"))
+    print("\nThe five largest changes:")
+    print("  %-5s %-12s %-20s %14s %14s %14s" % ("store", "day", "recomputed at", "was", "became", "delta"))
     for store, day_, at, was, became, delta, reason in rows:
         print("  %-5d %-12s %-20s %14s %14s %14s"
               % (store, day_, at.strftime("%Y-%m-%d %H:%M:%S"), money(was), money(became), money(delta)))
 
-    banner("Что осталось за окном пересчета")
+    banner("What fell outside the reprocessing window")
 
-    # Размер окна берется из данных, а не из константы: в таблице качества
-    # лежит тот порог, с которым флаг реально сравнивал.
+    # The window size comes from the data rather than from a constant: the
+    # quality table holds the very threshold the flag compared against.
     threshold = sql(
         """
         select distinct threshold_value from marts.mart_store_daily_quality
@@ -292,78 +295,79 @@ make seed, затем make models.""")
     )[0]
 
     print("""
-Окно пересчета - %d дней, и это не бесплатно. Возврат, приехавший позже, попадает
-к заказу, чей день пересобирать уже не будут: число за тот день останется
-прежним, то есть неверным.""" % window_days)
+The reprocessing window is %d days, and that is not free. A return that arrives
+later belongs to an order whose day will not be rebuilt any more: the number for
+that day stays as it was, which is to say wrong.""" % window_days)
     print()
-    print("  приехало в пределах окна и учтено:   %d возвратов" % tail[0])
-    print("  приехало позже окна и НЕ учтено:     %d возвратов на %s руб" % (tail[1], money(tail[2])))
+    print("  arrived within the window and counted:    %d returns" % tail[0])
+    print("  arrived after the window and NOT counted: %d returns worth %s RUB" % (tail[1], money(tail[2])))
 
     flagged = sql(
         "select count(*) from marts.mart_store_daily_quality where check_name = 'return_outside_window'"
     )[0][0]
-    print("  помечено флагом return_outside_window: %d магазино-дней" % flagged)
+    print("  flagged return_outside_window:            %d store-days" % flagged)
 
     print("""
-Это и есть цена решения, и она названа числом, а не спрятана. Потерянное видно
-в таблице качества по имени проверки; расширить окно - поменять одну переменную
-return_window_days и пересчитать. Витрина остается в том состоянии, в каком ее
-оставил пайплайн; вернуть эталон можно полной пересборкой - make models.
+This is the price of the decision, and it is named as a number rather than
+hidden. What was lost is visible in the quality table under the check name;
+widening the window means changing one variable, return_window_days, and
+reprocessing. The mart stays in whatever state the pipeline left it in; a full
+rebuild — make models — restores the reference state.
 
-Читается так: витрина за прошлый день пересобралась, выручка нетто уменьшилась
-ровно на сумму приехавших возвратов, и в журнале осталась строка с датой
-пересчета, прежним значением, новым и причиной. Никто не искал, что изменилось,
-- изменение само себя записало. А то, что в окно не влезло, не потерялось молча,
-а помечено.""")
+Read it like this: the mart for an earlier day was rebuilt, net revenue went
+down by exactly the amount of the returns that arrived, and the log kept a row
+with the date of the recomputation, the old value, the new one and the reason.
+Nobody had to go looking for what changed — the change recorded itself. And what
+did not fit inside the window was not lost silently — it was flagged.""")
     return 0
 
 
 def missing_partition() -> int:
-    """Источник за день не приехал: цепочка встала, витрина не тронута."""
-    banner("Сценарий: пропущенная партиция")
+    """The day's source never arrived: the chain stopped, the mart untouched."""
+    banner("Scenario: missing partition")
     print("""
-За %s источник не отдал ни одной строки заказов. Дефект заложен генератором в
-сыром слое, до всякого пайплайна, и воспроизводится по сиду - подстраивать
-ничего не нужно, дата даже не записана здесь числом, а взята из карты
-дефектов.""" % MISSING_PARTITION_DATE)
+For %s the source handed over not a single order row. The generator plants that
+defect in the raw layer, ahead of any pipeline, and it reproduces under the
+seed — nothing has to be staged, and the date is not even written out here as a
+literal but taken from the defect map.""" % MISSING_PARTITION_DATE)
 
-    step("Контрольная сумма витрины до прогона")
+    step("Mart checksum before the run")
     before = mart_digest()
     print("  %s" % before)
 
     alerts = ROOT / "airflow" / "alerts.log"
     alerts_before = alerts.read_text(encoding="utf-8").count("\n") if alerts.exists() else 0
 
-    step("Прогон за дату, за которую данные не приехали")
+    step("Run for a date whose data never arrived")
     run_pipeline(MISSING_PARTITION_DATE, expect_failure=True)
 
-    step("Что стало с витриной")
+    step("What happened to the mart")
     after = mart_digest()
     print("  %s" % after)
     if before == after:
-        print("  витрина НЕ ИЗМЕНИЛАСЬ")
+        print("  the mart is UNCHANGED")
     else:
-        print("  витрина изменилась - а не должна была")
-        FAILURES.append("витрина изменилась при упавшей свежести")
+        print("  the mart changed — and it should not have")
+        FAILURES.append("the mart changed even though freshness had failed")
 
-    step("Алерт")
+    step("Alert")
     if alerts.exists():
         lines = alerts.read_text(encoding="utf-8").splitlines()
         added = lines[alerts_before:]
         for line in added or lines[-1:]:
             print("  %s" % line)
     else:
-        print("  файла alerts.log нет - это ошибка")
+        print("  there is no alerts.log file — that is a bug")
 
-    step("Флаги качества за эту дату")
+    step("Quality flags for this date")
     flags = sql(
         "select check_name, count(*) from marts.mart_store_daily_quality where flag_date = %s group by 1",
         (MISSING_PARTITION_DATE,),
     )
     for name, count in flags:
-        print("  %-28s %d магазинов" % (name, count))
+        print("  %-28s %d stores" % (name, count))
 
-    step("Соседний день цел")
+    step("The neighbouring day is intact")
     row = sql(
         """
         select count(*), count(*) filter (where has_orders), coalesce(sum(revenue_net), 0)
@@ -371,32 +375,34 @@ def missing_partition() -> int:
         """,
         (HEALTHY_DATE,),
     )[0]
-    print("  %s: строк %d, с заказами %d, нетто %s" % (HEALTHY_DATE, row[0], row[1], money(row[2])))
+    print("  %s: rows %d, with orders %d, net %s" % (HEALTHY_DATE, row[0], row[1], money(row[2])))
 
-    step("Восстановление после появления данных - та же самая команда")
+    step("Recovery once the data shows up — the very same command")
     run_pipeline(HEALTHY_DATE)
 
     print("""
-Читается так: свежесть не прошла, сборка не началась, витрина осталась той же
-до бита, пришел алерт. Числа за этот день в витрине нет - и это правильнее, чем
-ноль: ноль означал бы, что продаж не было, а их не посчитали. Когда источник
-догонит, чинить руками нечего - тот же make run за ту же дату.""")
+Read it like this: freshness failed, the build never started, the mart stayed
+bit-for-bit as it was, an alert arrived. There is no number for this day in the
+mart — and that is more correct than a zero: a zero would say there were no
+sales, when in fact nothing was counted. Once the source catches up there is
+nothing to fix by hand — the same make run for the same date.""")
     return 0
 
 
 def broken_counter() -> int:
-    """Прибор врет в одной точке: сеть считается дальше, магазин помечен."""
-    banner("Сценарий: битый счетчик")
+    """One store's device lies: the network still counts, the store flagged."""
+    banner("Scenario: broken counter")
     print("""
-Дверной счетчик в нескольких магазинах занижает поток, а в одном не считает
-вовсе. Конверсия там выходит выше ста процентов - физически невозможная. Это
-дефект прибора, а не данных, и пересчетом он не чинится: останавливать из-за
-него всю сеть значит остаться без цифр по всем магазинам вместо одного.""")
+The door counter at several stores understates footfall, and at one of them it
+does not count at all. Conversion there comes out above a hundred per cent —
+physically impossible. This is a defect of the device, not of the data, and
+reprocessing does not fix it: stopping the whole network over it means having no
+numbers for every store instead of one.""")
 
-    step("Прогон за %s" % BROKEN_COUNTER_DATE)
+    step("Run for %s" % BROKEN_COUNTER_DATE)
     run_pipeline(BROKEN_COUNTER_DATE)
 
-    step("Что помечено за этот день")
+    step("What is flagged for this day")
     flags = sql(
         """
         select q.store_id, q.reason, c.orders_offline, c.visitors,
@@ -409,12 +415,12 @@ def broken_counter() -> int:
         """,
         (BROKEN_COUNTER_DATE,),
     )
-    print("  %-5s %10s %10s %10s  %s" % ("маг.", "чеков", "посетит.", "конверсия", "причина"))
+    print("  %-5s %10s %10s %10s  %s" % ("store", "orders", "visitors", "conversion", "reason"))
     for store, reason, orders, visitors, conv in flags:
         print("  %-5d %10s %10s %10s  %s"
-              % (store, orders, visitors, ("%s%%" % conv) if conv is not None else "нет", reason))
+              % (store, orders, visitors, ("%s%%" % conv) if conv is not None else "none", reason))
 
-    step("Остальная сеть в этот день")
+    step("The rest of the network on this day")
     row = sql(
         """
         select count(*), count(conversion),
@@ -424,10 +430,10 @@ def broken_counter() -> int:
         """,
         (BROKEN_COUNTER_DATE,),
     )[0]
-    print("  магазинов %d, конверсия посчитана у %d" % (row[0], row[1]))
-    print("  средняя конверсия по здоровым точкам %s%%, максимум %s%%" % (row[2], row[3]))
+    print("  stores %d, conversion computed for %d" % (row[0], row[1]))
+    print("  average conversion across healthy stores %s%%, maximum %s%%" % (row[2], row[3]))
 
-    step("Продажи за этот день не пострадали")
+    step("Sales for this day are unharmed")
     row = sql(
         """
         select count(*) filter (where has_orders), coalesce(sum(revenue_net), 0)
@@ -435,13 +441,13 @@ def broken_counter() -> int:
         """,
         (BROKEN_COUNTER_DATE,),
     )[0]
-    print("  магазинов с заказами %d, выручка нетто %s" % (row[0], money(row[1])))
+    print("  stores with orders %d, net revenue %s" % (row[0], money(row[1])))
 
     print("""
-Читается так: цепочка прошла до конца, выручка посчитана по всей сети, а
-конверсия помеченных точек отмечена строкой в таблице качества с причиной
-человеческими словами. Число не подменено оценкой и не выброшено - сказано, что
-ему нельзя верить.""")
+Read it like this: the chain ran to the end, revenue was computed across the
+whole network, and the conversion of the flagged stores carries a row in the
+quality table with the reason in plain words. The number was neither replaced by
+an estimate nor thrown away — the flag says outright that it cannot be trusted.""")
     return 0
 
 
@@ -453,23 +459,23 @@ SCENARIOS = {
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="scenarios", description="Сценарии отладки пайплайна")
+    parser = argparse.ArgumentParser(prog="scenarios", description="Pipeline debugging scenarios")
     parser.add_argument("scenario", choices=sorted(SCENARIOS))
     args = parser.parse_args(argv)
     SCENARIOS[args.scenario]()
 
-    # Код возврата - не формальность. Показ, который не умеет провалиться,
-    # ничего не доказывает, а зеленый по умолчанию хуже красного: он создает
-    # уверенность там, где проверки не было.
+    # The exit code is not a formality. A demo that cannot fail proves nothing,
+    # and green by default is worse than red: it creates confidence where there
+    # was no check at all.
     if FAILURES:
         print()
-        print("Сценарий не сошелся, расхождений %d:" % len(FAILURES))
+        print("The scenario did not add up — %d discrepancies:" % len(FAILURES))
         for note in FAILURES:
             print("  -", note)
         return 1
 
     print()
-    print("Сценарий прошел как задумано.")
+    print("The scenario ran as intended.")
     return 0
 
 

@@ -1,24 +1,25 @@
--- Сырой слой: то, что приезжает из источника, как оно есть.
+-- The raw layer: what arrives from the source, exactly as it is.
 --
--- Здесь намеренно НЕТ первичных ключей и ограничений уникальности. Сырой слой
--- повторяет выгрузку источника вместе с ее дефектами, а среди заложенных
--- дефектов есть дубли строк. Ограничение уникальности означало бы, что дубль
--- невозможно даже загрузить, - и тогда дедупликация в staging защищала бы от
--- того, чего не бывает. Уникальность зерна проверяет тест unique_grain, и он
--- стоит на stg_order_items, сразу после дедупликации, а не на сырье.
+-- There are deliberately NO primary keys and no uniqueness constraints here.
+-- The raw layer reproduces the source export, defects and all, and among the
+-- planted defects are doubled rows. A uniqueness constraint would mean a
+-- duplicate could not even be loaded — and then the deduplication in staging
+-- would be guarding against something that never happens. Grain uniqueness is
+-- checked by the unique_grain test, and it sits on stg_order_items, right
+-- after deduplication, not on the raw data.
 --
--- Индексы стоят только на ключах партиций: загрузка работает через
--- delete-and-insert за дату, и без индекса каждый прогон делал бы seq scan.
+-- Indexes sit only on the partition keys: the load works by delete-and-insert
+-- for a date, and without an index every run would do a seq scan.
 
 CREATE SCHEMA IF NOT EXISTS raw;
 
--- Справочник магазинов. Единственная таблица без партиций: перегружается
--- целиком, она маленькая и меняется редко.
+-- Store reference table. The one table without partitions: it is reloaded
+-- whole, it is small and it changes rarely.
 CREATE TABLE IF NOT EXISTS raw.stores (
     store_id      integer      NOT NULL,
     store_code    text         NOT NULL,
     city          text         NOT NULL,
-    store_format  text         NOT NULL,   -- малый | средний | большой
+    store_format  text         NOT NULL,   -- small | medium | large
     opened_on     date         NOT NULL
 );
 
@@ -26,23 +27,24 @@ CREATE TABLE IF NOT EXISTS raw.orders (
     order_id      bigint       NOT NULL,
     store_id      integer      NOT NULL,
     order_ts      timestamp    NOT NULL,
-    order_date    date         NOT NULL,   -- ключ партиции
-    channel       text         NOT NULL,   -- офлайн | сайт | приложение
-    status        text         NOT NULL,   -- оформлен | отменен
+    order_date    date         NOT NULL,   -- partition key
+    channel       text         NOT NULL,   -- offline | web | app
+    status        text         NOT NULL,   -- placed | cancelled
     customer_id   bigint
 );
 CREATE INDEX IF NOT EXISTS orders_order_date_idx ON raw.orders (order_date);
 
--- Позиции заказа. order_date денормализован намеренно: без него удаление
--- партиции пришлось бы делать джойном к заказам, а это ровно тот случай,
--- когда денормализация в сыром слое стоит дешевле, чем красота модели.
+-- Order lines. order_date is denormalised on purpose: without it, deleting a
+-- partition would take a join back to the orders, and this is exactly the case
+-- where denormalising the raw layer costs less than a beautiful model.
 --
--- Про sku: это непрозрачный код позиции и ничего больше. Ни категории, ни
--- бренда, ни закупочной цены здесь нет и не будет - это категорийный
--- менеджмент, другая профессия, и граница домена держится с самого начала.
+-- About sku: it is an opaque item code and nothing more. There is no category
+-- here, no brand and no cost price, and there will not be — that is category
+-- management, a different profession, and the domain boundary is held from
+-- the start.
 CREATE TABLE IF NOT EXISTS raw.order_items (
     order_id      bigint       NOT NULL,
-    order_date    date         NOT NULL,   -- ключ партиции
+    order_date    date         NOT NULL,   -- partition key
     line_no       integer      NOT NULL,
     sku           text         NOT NULL,
     quantity      integer      NOT NULL,
@@ -51,15 +53,16 @@ CREATE TABLE IF NOT EXISTS raw.order_items (
 );
 CREATE INDEX IF NOT EXISTS order_items_order_date_idx ON raw.order_items (order_date);
 
--- Возвраты. Ключ партиции - дата возврата, а не дата заказа: возврат приезжает
--- своим днем и меняет выручку прошлого. На этом стоит окно пересчета витрины
--- mart_store_daily_sales, и структура таблицы это допускает.
+-- Returns. The partition key is the return date, not the order date: a return
+-- arrives on its own day and changes the revenue of an earlier one. The
+-- reprocessing window on mart_store_daily_sales rests on this, and the shape
+-- of the table allows it.
 CREATE TABLE IF NOT EXISTS raw.returns (
     return_id       bigint       NOT NULL,
     order_id        bigint       NOT NULL,
-    order_date      date         NOT NULL, -- дата исходного заказа
+    order_date      date         NOT NULL, -- date of the original order
     line_no         integer      NOT NULL,
-    returned_date   date         NOT NULL, -- ключ партиции
+    returned_date   date         NOT NULL, -- partition key
     quantity        integer      NOT NULL,
     returned_amount numeric(12,2) NOT NULL
 );
@@ -69,14 +72,14 @@ CREATE TABLE IF NOT EXISTS raw.cancellations (
     cancellation_id bigint      NOT NULL,
     order_id        bigint      NOT NULL,
     order_date      date        NOT NULL,
-    cancelled_date  date        NOT NULL,  -- ключ партиции
+    cancelled_date  date        NOT NULL,  -- partition key
     reason          text        NOT NULL
 );
 CREATE INDEX IF NOT EXISTS cancellations_cancelled_date_idx ON raw.cancellations (cancelled_date);
 
 CREATE TABLE IF NOT EXISTS raw.store_traffic (
     store_id      integer      NOT NULL,
-    traffic_date  date         NOT NULL,   -- ключ партиции
+    traffic_date  date         NOT NULL,   -- partition key
     visitors      integer      NOT NULL
 );
 CREATE INDEX IF NOT EXISTS store_traffic_traffic_date_idx ON raw.store_traffic (traffic_date);

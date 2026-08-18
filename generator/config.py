@@ -1,9 +1,9 @@
-"""Параметры генерации.
+"""Generation parameters.
 
-Горизонт задан **фиксированными датами, а не отсчетом от сегодня.** Это
-принципиально: `end_date = date.today()` означал бы, что вчерашний прогон и
-сегодняшний дают разные данные, и критерий "повторный прогон дает то же самое"
-переставал бы что-либо значить, сохраняя при этом видимость проверки.
+The horizon is a pair of **fixed dates rather than an offset from today.**
+That matters: `end_date = date.today()` would mean yesterday's run and today's
+produce different data, and the criterion "a repeat run gives the same thing"
+would stop meaning anything while keeping the appearance of a check.
 """
 
 from __future__ import annotations
@@ -11,22 +11,23 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
-# Максимальная задержка возврата. Ограничение нужно не для красоты: чтобы
-# собрать партицию возвратов за дату R, нужно перегенерировать заказы за
-# R-MAX_RETURN_DELAY..R. Без верхней границы пришлось бы поднимать всю историю.
-# Этим же числом ограничена глубина окна пересчета - но само окно, 28 дней,
-# выбрано по измеренному распределению задержки, а не по этому потолку.
+# Maximum delay of a return. The bound is not decoration: to assemble the
+# returns partition for date R you have to regenerate the orders for
+# R-MAX_RETURN_DELAY_DAYS..R. Without an upper bound that means the whole
+# history, every time. The same number bounds the depth of the reprocessing
+# window — but the window itself, 28 days, was chosen from the measured
+# distribution of the delay, not from this ceiling.
 MAX_RETURN_DELAY_DAYS = 30
 
-# Доля заказов, по которым приезжает хотя бы один возврат.
+# Share of orders that get at least one return.
 RETURN_RATE = 0.085
 
-# Доля отмененных заказов.
+# Share of cancelled orders.
 CANCELLATION_RATE = 0.03
 
-# Отмена тоже приезжает своей датой, только окно короткое. Партиция отмен за
-# дату собирается с той же оглядкой назад, что и партиция возвратов, - разница
-# только в глубине.
+# A cancellation also arrives on its own date, only the window is short. Its
+# partition for a date is assembled by looking back the same way the returns
+# partition is — only the depth differs.
 CANCELLATION_MAX_DELAY_DAYS = 2
 
 

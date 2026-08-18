@@ -1,24 +1,26 @@
-"""Сверка витрин с сырым слоем.
+"""Reconciling the marts against the raw layer.
 
-Витрины считает SQL внутри dbt. Здесь то же самое считается второй раз - другим
-инструментом и по сырью напрямую. Если бы проверка была написана тем же SQL и
-тем же движком, она повторила бы ошибку модели и не заметила бы ее; смысл
-сверки ровно в том, чтобы два независимых способа сошлись в одном числе.
+The marts are computed by SQL inside dbt. Here the same things are computed a
+second time — with a different tool and straight off the raw data. Had this
+check been written in the same SQL on the same engine, it would have repeated
+the model's mistake without noticing it; the point of a reconciliation is
+exactly that two independent routes arrive at one number.
 
-Деньги читаются в копейках целым числом, а не в рублях с плавающей точкой.
-Причина стоит абзаца, потому что на ней спотыкаются: numeric(12,2) приезжает в
-pandas как float64, и на сумме по трем с половиной миллионам строк точное
-равенство разваливается в районе 1e-9 - то есть первый же прогон дал бы ложный
-провал и час на его разбор. В копейках суммы целочисленные и сходятся ровно.
-Единственное место, где допуск честен, - скользящее среднее: среднее семи чисел
-дробно по своей природе.
+Money is read as whole kopecks rather than as roubles in floating point. The
+reason is worth a paragraph, because people trip over it: numeric(12,2) arrives
+in pandas as float64, and on a sum over three and a half million rows exact
+equality falls apart somewhere around 1e-9 — so the very first run would have
+produced a false failure and an hour spent chasing it. In kopecks the sums are
+integers and match exactly. The one place where a tolerance is honest is the
+moving average: the mean of seven numbers is fractional by nature.
 
-Что здесь проверяется и чего не проверяется. Это разовая сверка снаружи
-пайплайна, и она порождает числа. Внутри гейта те же числа стоят тестами dbt -
-сверку чека с сырьем делает dbt/tests/assert_order_lines_match_raw.sql в каждом
-прогоне. Это не дублирование работы, а две роли одной проверки.
+What is checked here and what is not. This is a one-off reconciliation outside
+the pipeline, and it produces numbers. Inside the gate the same numbers stand as
+dbt tests — order lines are reconciled against the raw layer by
+dbt/tests/assert_order_lines_match_raw.sql on every run. That is not duplicated
+work but two roles of one check.
 
-Запуск: make reconcile
+Run: make reconcile
 """
 
 from __future__ import annotations
@@ -30,26 +32,28 @@ import sys
 import pandas as pd
 import psycopg
 
-# Даты дефектов и краевые случаи, известные заранее из генератора. Числа здесь
-# не подгоняются под результат: они получены из карты дефектов (make defects) и
-# служат ожиданием, а не сверкой с самой собой.
-# Даты держим объектами Timestamp, а не строками. Строка сравнивается с датой
-# по-разному в зависимости от операции: == разберет ее, а isin молча не найдет
-# ничего и оставит проверку без строк - то есть зеленой и бессмысленной.
+# Defect dates and edge cases, known in advance from the generator. The numbers
+# here are not fitted to the result: they come from the defect map
+# (make defects) and serve as an expectation rather than as a check against
+# itself.
+# We keep the dates as Timestamp objects rather than as strings. A string
+# compares against a date differently depending on the operation: == parses it,
+# while isin silently finds nothing and leaves the check with no rows — green
+# and meaningless.
 DUPLICATE_DATES = [pd.Timestamp(d) for d in
                    ("2025-07-23", "2025-11-25", "2026-01-27", "2026-03-19", "2026-05-09")]
 ORDERS_MISSING_DATE = pd.Timestamp("2025-02-26")
 TRAFFIC_MISSING_DATES = [pd.Timestamp(d) for d in ("2025-07-23", "2026-06-25")]
 
-MONEY = 100  # копеек в рубле
+MONEY = 100  # kopecks in a rouble
 
 
 def dsn() -> str:
-    """Параметры соединения, а не логика, поэтому продублированы намеренно.
+    """Connection parameters, not logic, so the duplication is deliberate.
 
-    Импортировать их из генератора значило бы связать проверку с кодом, который
-    она проверяет, - а сверка должна уметь смотреть на любую базу, где лежат
-    эти витрины.
+    Importing them from the generator would tie the check to the code it is
+    checking — and a reconciliation has to be able to look at any database that
+    holds these marts.
     """
     if url := os.environ.get("DATABASE_URL"):
         return url
@@ -62,11 +66,11 @@ def dsn() -> str:
 
 
 def read(conn: psycopg.Connection, sql: str, **kwargs) -> pd.DataFrame:
-    """Читает результат запроса через COPY, а не через fetchall.
+    """Reads a query result through COPY rather than through fetchall.
 
-    Fetchall на трех с половиной миллионах строк сначала построил бы миллионы
-    кортежей Python и только потом отдал их pandas - это гигабайты там, где
-    достаточно сотен мегабайт. COPY отдает поток, который pandas разбирает сам.
+    Fetchall on three and a half million rows would first build millions of
+    Python tuples and only then hand them to pandas — gigabytes where hundreds
+    of megabytes are enough. COPY delivers a stream that pandas parses itself.
     """
     buf = io.BytesIO()
     with conn.cursor() as cur:
@@ -78,7 +82,7 @@ def read(conn: psycopg.Connection, sql: str, **kwargs) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Учет результатов
+# Keeping score
 # ---------------------------------------------------------------------------
 
 RESULTS: list[tuple[str, bool, str]] = []
@@ -86,14 +90,15 @@ RESULTS: list[tuple[str, bool, str]] = []
 
 def check(name: str, ok: bool, detail: str = "") -> None:
     RESULTS.append((name, ok, detail))
-    print("  %s  %-46s %s" % ("OK  " if ok else "ПРОВАЛ", name, detail))
+    print("  %s  %-48s %s" % ("OK  " if ok else "FAIL", name, detail))
 
 
 def mismatch(expected: pd.Series, actual: pd.Series) -> pd.Series:
-    """Где два столбца разошлись. Два пропуска считаются совпадением.
+    """Where two columns diverged. Two nulls count as a match.
 
-    Это важно: null в витрине означает "считать не по чему", и если сверка
-    ждет там же null, то они сошлись, а не разошлись.
+    This matters: a null in the mart means "there was nothing to count", and if
+    the reconciliation expects a null in the same place, then the two agree
+    rather than differ.
     """
     both_missing = expected.isna() & actual.isna()
     equal = (expected == actual).fillna(False).astype(bool)
@@ -101,28 +106,28 @@ def mismatch(expected: pd.Series, actual: pd.Series) -> pd.Series:
 
 
 def verdict(diff: pd.DataFrame, keys: list[str], total: int, limit: int = 3) -> str:
-    """Итог сравнения - всегда с числом сравненных строк.
+    """The outcome of a comparison — always with the number of rows compared.
 
-    Число здесь не для красоты. Проверка, которой нечего было сравнивать,
-    выглядит точно так же, как успешная, и молча проходит - это и есть самый
-    опасный вид зеленого. Пустое сравнение считается провалом, а сколько строк
-    сошлось, видно в выводе.
+    That number is not there for looks. A check that had nothing to compare
+    looks exactly like a successful one and passes silently — the most dangerous
+    kind of green there is. An empty comparison counts as a failure, and how
+    many rows matched is visible in the output.
     """
     if not diff.empty:
         head = diff[keys].head(limit).to_dict("records")
-        return "расхождений %d из %d, например %s" % (len(diff), total, head)
+        return "%d of %d rows differ, for example %s" % (len(diff), total, head)
     if total == 0:
-        return "сравнивать было нечего - проверка ничего не доказывает"
-    return "совпало на %d строках" % total
+        return "there was nothing to compare — this check proves nothing"
+    return "matched on %d rows" % total
 
 
 # ---------------------------------------------------------------------------
-# Загрузка
+# Loading
 # ---------------------------------------------------------------------------
 
 
 def load(conn: psycopg.Connection) -> dict[str, pd.DataFrame]:
-    print("Читаю сырой слой и витрины...")
+    print("Reading the raw layer and the marts...")
 
     data = {}
 
@@ -142,7 +147,7 @@ def load(conn: psycopg.Connection) -> dict[str, pd.DataFrame]:
         dtype={"channel": "category", "status": "category"},
     )
 
-    # Деньги в копейках целым числом - см. докстроку модуля.
+    # Money as whole kopecks — see the module docstring.
     data["items"] = read(
         conn,
         """
@@ -211,8 +216,9 @@ def load(conn: psycopg.Connection) -> dict[str, pd.DataFrame]:
         parse_dates=["order_date"],
     )
 
-    # COPY в формате CSV печатает булево как t и f, и pandas честно читает их
-    # строками. Без этой правки первое же отрицание упало бы на строке.
+    # COPY in CSV format prints booleans as t and f, and pandas faithfully
+    # reads them as strings. Without this fix the first negation would have
+    # blown up on a string.
     for frame, columns in (
         ("sales", ["has_orders"]),
         ("conversion", ["has_traffic", "has_orders"]),
@@ -220,9 +226,9 @@ def load(conn: psycopg.Connection) -> dict[str, pd.DataFrame]:
         for column in columns:
             data[frame][column] = data[frame][column].map({"t": True, "f": False}).astype(bool)
 
-    # Целые колонки с пропусками pandas читает как float. Возвращаем их в целый
-    # тип с поддержкой пропуска, иначе сравнение пойдет по плавающей точке -
-    # ровно того, чего мы избегаем.
+    # pandas reads integer columns that contain nulls as float. We put them
+    # back into an integer type that supports nulls, otherwise the comparison
+    # would run in floating point — exactly what we are avoiding here.
     for frame, columns in (
         ("sales", ["orders_count", "orders_cancelled_count", "lines_count", "units_sold",
                    "revenue_gross_kop", "returns_amount_kop", "returns_arrived_kop",
@@ -236,10 +242,11 @@ def load(conn: psycopg.Connection) -> dict[str, pd.DataFrame]:
 
 
 def deduplicate(items: pd.DataFrame) -> pd.DataFrame:
-    """Та же дедупликация, что в staging, повторенная независимо.
+    """The same deduplication as in staging, repeated independently.
 
-    Правило повторяется дословно, включая сортировку: сверка должна проверять
-    результат правила, а не подменять правило удобным приближением.
+    The rule is copied word for word, ordering included: the reconciliation has
+    to check the result of the rule, not swap the rule for a convenient
+    approximation of it.
     """
     ordered = items.sort_values(
         ["order_id", "line_no", "line_amount_kop", "quantity", "unit_price_kop", "sku"],
@@ -249,7 +256,7 @@ def deduplicate(items: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Проверки
+# Checks
 # ---------------------------------------------------------------------------
 
 
@@ -260,34 +267,35 @@ def check_grain(data: dict[str, pd.DataFrame]) -> None:
     last_day = max(orders["order_date"].max(), traffic["traffic_date"].max())
     horizon = pd.date_range(first_day, last_day, freq="D")
 
-    # Ожидаемое число строк считается от дат открытия, а не берется из витрины.
+    # The expected row count is derived from the opening dates rather than
+    # taken from the mart.
     expected_rows = int(sum((horizon >= opened).sum() for opened in stores["opened_on"]))
 
     for name, frame, key in (
-        ("продажи", data["sales"], "order_date"),
-        ("конверсия", data["conversion"], "traffic_date"),
-        ("тренд", data["trend"], "order_date"),
+        ("sales", data["sales"], "order_date"),
+        ("conversion", data["conversion"], "traffic_date"),
+        ("trend", data["trend"], "order_date"),
     ):
         check(
-            "зерно витрины: %s" % name,
+            "mart grain: %s" % name,
             len(frame) == expected_rows,
-            "строк %d, ожидалось %d" % (len(frame), expected_rows),
+            "rows %d, expected %d" % (len(frame), expected_rows),
         )
         check(
-            "зерно уникально: %s" % name,
+            "grain is unique: %s" % name,
             not frame.duplicated(subset=["store_id", key]).any(),
-            "дублей зерна %d" % int(frame.duplicated(subset=["store_id", key]).sum()),
+            "grain duplicates %d" % int(frame.duplicated(subset=["store_id", key]).sum()),
         )
 
-    # Магазины, открывшиеся внутри горизонта: до открытия строк быть не должно.
+    # Stores that opened inside the horizon: no rows before the opening date.
     late = stores[stores["opened_on"] > first_day]
     first_seen = data["sales"].groupby("store_id")["order_date"].min().rename("first_row")
     joined = late.set_index("store_id").join(first_seen)
     wrong = joined[joined["first_row"] != joined["opened_on"]]
     check(
-        "поздние магазины начинаются с даты открытия",
+        "late stores start at their opening date",
         wrong.empty,
-        "таких магазинов %d, расходится %d" % (len(late), len(wrong)),
+        "such stores %d, mismatched %d" % (len(late), len(wrong)),
     )
 
 
@@ -296,11 +304,11 @@ def check_sales(data: dict[str, pd.DataFrame]) -> None:
     deduped = deduplicate(data["items"])
 
     order_head = orders[["order_id", "store_id", "order_date", "status"]]
-    live = order_head[order_head["status"] != "отменен"]
+    live = order_head[order_head["status"] != "cancelled"]
 
-    # Заказы: считаем по шапкам, как и витрина.
+    # Orders: counted off the headers, the same way the mart counts them.
     counted = (
-        order_head.assign(cancelled=order_head["status"] == "отменен")
+        order_head.assign(cancelled=order_head["status"] == "cancelled")
         .groupby(["store_id", "order_date"], observed=True)
         .agg(
             orders_count=("cancelled", lambda s: int((~s).sum())),
@@ -313,10 +321,10 @@ def check_sales(data: dict[str, pd.DataFrame]) -> None:
     for column in ("orders_count", "orders_cancelled_count"):
         diff = merged[mismatch(merged[column + "_expected"].astype("Int64"),
                                merged[column + "_mart"])]
-        check("заказы: %s" % column, diff.empty and len(merged) > 0,
+        check("orders: %s" % column, diff.empty and len(merged) > 0,
               verdict(diff, ["store_id", "order_date"], len(merged)))
 
-    # Выручка и позиции по дедуплицированному сырью.
+    # Revenue and lines off the deduplicated raw data.
     lines = deduped.merge(live[["order_id", "store_id"]], on="order_id", how="inner")
     aggregated = (
         lines.groupby(["store_id", "order_date"], observed=True)
@@ -330,33 +338,34 @@ def check_sales(data: dict[str, pd.DataFrame]) -> None:
     merged = sales.merge(aggregated, on=["store_id", "order_date"], how="left",
                          suffixes=("_mart", "_expected"))
 
-    # Витрина ставит ноль там, где данные приехали, а сырье просто не дает
-    # строки. Приводим ожидание к тому же правилу, иначе разойдемся на пустых
-    # днях по разнице соглашений, а не по ошибке.
+    # The mart writes a zero where the data arrived and the raw layer simply
+    # yields no rows. We bring the expectation to the same rule, otherwise we
+    # would diverge on empty days over a difference in conventions rather than
+    # over a real error.
     for column in ("lines_count", "units_sold", "revenue_gross_kop"):
         expected = merged[column + "_expected"].astype("Int64")
         expected = expected.where(~merged["has_orders"], expected.fillna(0))
         expected = expected.where(merged["has_orders"], pd.NA)
         diff = merged[mismatch(expected, merged[column + "_mart"])]
-        check("выручка: %s" % column, diff.empty and len(merged) > 0,
+        check("revenue: %s" % column, diff.empty and len(merged) > 0,
               verdict(diff, ["store_id", "order_date"], len(merged)))
 
     total = int(aggregated["revenue_gross_kop"].sum())
-    check("выручка брутто, итог по горизонту", True,
-          "%.2f руб" % (total / MONEY))
+    check("gross revenue, total over the horizon", True,
+          "%.2f RUB" % (total / MONEY))
 
 
 def check_deduplication(data: dict[str, pd.DataFrame]) -> None:
-    """Расхождение с недедуплицированным сырьем - доказательство, а не провал.
+    """A gap against the undeduplicated raw layer is proof, not a failure.
 
-    Утверждений два, и они противоположные по смыслу. Витрина обязана сходиться
-    с сырьем, приведенным к зерну. И она обязана НЕ сходиться с сырьем как есть,
-    причем ровно на тех датах, где заложены дубли, и ровно на снятые копии. Если
-    расхождения нет нигде - дедупликация не сработала; если оно есть где-то
-    еще - сработала не там.
+    There are two statements here, and they are opposites. The mart must agree
+    with the raw layer reduced to the grain. And it must NOT agree with the raw
+    layer as it stands — on exactly the dates where the duplicates are planted,
+    and by exactly the copies removed. No gap anywhere means the deduplication
+    did nothing; a gap somewhere else means it worked in the wrong place.
     """
     items, orders = data["items"], data["orders"]
-    live = orders[orders["status"] != "отменен"][["order_id", "store_id"]]
+    live = orders[orders["status"] != "cancelled"][["order_id", "store_id"]]
 
     naive = (
         items.merge(live, on="order_id", how="inner")
@@ -371,14 +380,14 @@ def check_deduplication(data: dict[str, pd.DataFrame]) -> None:
     by_date = merged.groupby("order_date")["gap_kop"].sum()
     with_gap = sorted(by_date[by_date.fillna(0) != 0].index)
 
-    check("расхождение с сырьем как есть - ровно на датах дублей",
+    check("gap against raw only on the duplicate dates",
           with_gap == sorted(DUPLICATE_DATES),
-          "дат %d из %d: %s" % (len(with_gap), by_date.size,
-                                ", ".join(str(d.date()) for d in with_gap)))
+          "dates %d of %d: %s" % (len(with_gap), by_date.size,
+                                  ", ".join(str(d.date()) for d in with_gap)))
 
     copies_removed = len(items) - len(deduplicate(items))
-    check("снятые копии посчитаны", copies_removed > 0,
-          "строк сырья %d, после дедупликации %d, снято %d"
+    check("the removed copies are counted", copies_removed > 0,
+          "raw rows %d, after deduplication %d, removed %d"
           % (len(items), len(items) - copies_removed, copies_removed))
 
 
@@ -386,9 +395,9 @@ def check_returns(data: dict[str, pd.DataFrame]) -> None:
     returns, orders, sales = data["returns"], data["orders"], data["sales"]
     attributed = returns.merge(orders[["order_id", "store_id"]], on="order_id", how="left")
 
-    check("возвраты привязались к магазину",
+    check("returns attached to a store",
           attributed["store_id"].notna().all(),
-          "возвратов без заказа %d" % int(attributed["store_id"].isna().sum()))
+          "returns with no order %d" % int(attributed["store_id"].isna().sum()))
 
     by_order_date = (
         attributed.groupby(["store_id", "order_date"], observed=True)["returned_amount_kop"]
@@ -399,7 +408,7 @@ def check_returns(data: dict[str, pd.DataFrame]) -> None:
     expected = expected.where(~merged["has_orders"], expected.fillna(0))
     expected = expected.where(merged["has_orders"], pd.NA)
     diff = merged[mismatch(expected, merged["returns_amount_kop"])]
-    check("возвраты по оси даты заказа", diff.empty and len(merged) > 0,
+    check("returns on the order-date axis", diff.empty and len(merged) > 0,
           verdict(diff, ["store_id", "order_date"], len(merged)))
 
     by_arrival = (
@@ -410,25 +419,25 @@ def check_returns(data: dict[str, pd.DataFrame]) -> None:
     merged = sales.merge(by_arrival, on=["store_id", "order_date"], how="left")
     expected = merged["expected"].astype("Int64").fillna(0)
     diff = merged[mismatch(expected, merged["returns_arrived_kop"])]
-    check("возвраты по оси даты приезда", diff.empty and len(merged) > 0,
+    check("returns on the arrival-date axis", diff.empty and len(merged) > 0,
           verdict(diff, ["store_id", "order_date"], len(merged)))
 
-    # Один и тот же набор, разложенный по двум осям, обязан дать один итог.
+    # One and the same set, laid out on two axes, must give one total.
     left = int(sales["returns_amount_kop"].fillna(0).sum())
     right = int(sales["returns_arrived_kop"].fillna(0).sum())
-    check("итоги по двум осям возвратов равны", left == right,
-          "%.2f и %.2f руб" % (left / MONEY, right / MONEY))
+    check("both return axes give the same total", left == right,
+          "%.2f and %.2f RUB" % (left / MONEY, right / MONEY))
 
     net = sales["revenue_gross_kop"] - sales["returns_amount_kop"]
     diff = sales[mismatch(net, sales["revenue_net_kop"])]
-    check("нетто = брутто минус возвраты", diff.empty and len(sales) > 0,
+    check("net = gross minus returns", diff.empty and len(sales) > 0,
           verdict(diff, ["store_id", "order_date"], len(sales)))
 
 
 def check_conversion(data: dict[str, pd.DataFrame]) -> None:
     orders, traffic, conv = data["orders"], data["traffic"], data["conversion"]
 
-    offline = orders[(orders["channel"] == "офлайн") & (orders["status"] != "отменен")]
+    offline = orders[(orders["channel"] == "offline") & (orders["status"] != "cancelled")]
     counted = (
         offline.groupby(["store_id", "order_date"], observed=True)
         .size().rename("expected_offline").reset_index()
@@ -443,35 +452,35 @@ def check_conversion(data: dict[str, pd.DataFrame]) -> None:
         .merge(traffic.rename(columns={"visitors": "expected_visitors"}),
                on=["store_id", "traffic_date"], how="left")
     )
-    # astype(bool) обязателен: после левого джойна колонка становится объектной,
-    # и отрицание объектного столбца дает целые числа, а не булево.
+    # astype(bool) is required: after a left join the column becomes an object
+    # column, and negating an object column yields integers, not booleans.
     merged["has_raw_orders"] = merged["has_raw_orders"].fillna(False).astype(bool)
 
     expected = merged["expected_offline"].astype("Int64")
     expected = expected.where(~merged["has_raw_orders"], expected.fillna(0))
     expected = expected.where(merged["has_raw_orders"], pd.NA)
     diff = merged[mismatch(expected, merged["orders_offline"])]
-    check("конверсия: чеки в числителе", diff.empty and len(merged) > 0,
+    check("conversion: orders in the numerator", diff.empty and len(merged) > 0,
           verdict(diff, ["store_id", "traffic_date"], len(merged)))
 
     diff = merged[mismatch(merged["expected_visitors"].astype("Int64"), merged["visitors"])]
-    check("конверсия: посетители в знаменателе", diff.empty and len(merged) > 0,
+    check("conversion: visitors in the denominator", diff.empty and len(merged) > 0,
           verdict(diff, ["store_id", "traffic_date"], len(merged)))
 
     ratio = merged["orders_offline"].astype("Float64") / merged["visitors"].replace(0, pd.NA)
     diff = merged[(ratio.round(9) != merged["conversion"].round(9))
                   & ~(ratio.isna() & merged["conversion"].isna())]
-    check("конверсия пересчитана из сырья", diff.empty and len(merged) > 0,
+    check("conversion recomputed from the raw layer", diff.empty and len(merged) > 0,
           verdict(diff, ["store_id", "traffic_date"], len(merged)))
 
-    # Раскладка пропусков: их должно быть ровно столько, сколько объяснимо.
+    # Breaking down the nulls: there must be exactly as many as we can explain.
     no_traffic = int((~conv["has_traffic"]).sum())
     zero_visitors = int((conv["visitors"] == 0).sum())
     no_orders = int((~conv["has_orders"]).sum())
     nulls = int(conv["conversion"].isna().sum())
-    check("пропуски конверсии раскладываются без остатка",
+    check("every conversion null is accounted for",
           nulls == no_traffic + zero_visitors + no_orders,
-          "%d = %d без трафика + %d с нулем посетителей + %d без заказов"
+          "%d = %d without traffic + %d with zero visitors + %d without orders"
           % (nulls, no_traffic, zero_visitors, no_orders))
 
 
@@ -479,36 +488,36 @@ def check_defects(data: dict[str, pd.DataFrame]) -> None:
     sales, conv, items = data["sales"], data["conversion"], data["items"]
 
     day = sales[sales["order_date"] == ORDERS_MISSING_DATE]
-    check("пропущенная партиция заказов: выручка пуста, а не ноль",
+    check("missing order partition: revenue null, not zero",
           len(day) > 0 and day["revenue_gross_kop"].isna().all() and not day["has_orders"].any(),
-          "строк %d, все с пустой выручкой" % len(day))
+          "rows %d, all with null revenue" % len(day))
     arrived = int(day["returns_arrived_kop"].fillna(0).sum())
-    check("в тот же день возвраты все равно приехали", arrived > 0,
-          "%.2f руб к заказам прошлых дней" % (arrived / MONEY))
+    check("returns still arrived on that same day", arrived > 0,
+          "%.2f RUB against orders from earlier days" % (arrived / MONEY))
 
     days = conv[conv["traffic_date"].isin(TRAFFIC_MISSING_DATES)]
-    check("пропущенный трафик: конверсия пуста",
+    check("missing traffic: conversion is null",
           len(days) > 0 and not days["has_traffic"].any() and days["conversion"].isna().all(),
-          "строк %d за %d дня" % (len(days), len(TRAFFIC_MISSING_DATES)))
+          "rows %d over %d days" % (len(days), len(TRAFFIC_MISSING_DATES)))
 
     broken = conv[conv["conversion"] > 1]
-    check("битый счетчик дает конверсию выше 100%", not broken.empty,
-          "магазинов %d, максимум %.0f%%"
+    check("the broken counter gives conversion above 100%", not broken.empty,
+          "stores %d, maximum %.0f%%"
           % (broken["store_id"].nunique(), broken["conversion"].max() * 100))
 
-    # Выбросы обязаны дойти до промежуточного слоя нетронутыми.
+    # Outliers must reach the intermediate layer untouched.
     deduped = deduplicate(items)
     negative = int((deduped["line_amount_kop"] < 0).sum())
     zero_qty = int((deduped["quantity"] == 0).sum())
-    check("выбросы не отфильтрованы", negative > 0 and zero_qty > 0,
-          "отрицательных сумм %d, нулевых количеств %d" % (negative, zero_qty))
+    check("outliers are not filtered out", negative > 0 and zero_qty > 0,
+          "negative amounts %d, zero quantities %d" % (negative, zero_qty))
 
 
 def check_trend(data: dict[str, pd.DataFrame]) -> None:
-    """Скользящее среднее - единственное место с допуском, и он честен.
+    """The moving average is the one place with a tolerance, and it is honest.
 
-    Среднее семи чисел дробно по своей природе, целыми копейками его не
-    выразить. Все остальное сравнивается точно.
+    The mean of seven numbers is fractional by nature and cannot be expressed in
+    whole kopecks. Everything else is compared exactly.
     """
     sales, trend = data["sales"], data["trend"]
     base = sales[["store_id", "order_date", "revenue_net_kop"]].sort_values(
@@ -524,23 +533,23 @@ def check_trend(data: dict[str, pd.DataFrame]) -> None:
     both_missing = merged["expected"].isna() & actual.isna()
     close = ((merged["expected"] - actual).abs() < 1e-6).fillna(False).astype(bool)
     diff = merged[~(both_missing | close)]
-    check("скользящее среднее совпадает с pandas", diff.empty and len(merged) > 0,
+    check("moving average matches pandas", diff.empty and len(merged) > 0,
           verdict(diff, ["store_id", "order_date"], len(merged)))
 
     empty = int(merged["revenue_net_avg_7d"].isna().sum())
-    check("неполные окна оставлены пустыми", empty > 0,
-          "строк без среднего %d" % empty)
+    check("incomplete windows are left null", empty > 0,
+          "rows without an average %d" % empty)
 
 
 def print_digests(conn: psycopg.Connection) -> None:
-    """Контрольные суммы витрин той же формулой, что у генератора.
+    """Mart checksums, by the same formula the generator uses.
 
-    Считаются по отсортированным хешам строк, то есть не зависят от физического
-    порядка. Двойной прогон make models обязан дать те же суммы - это и есть
-    проверка того, что сортировка в дедупликации детерминирована.
+    They are computed over sorted row hashes, so they do not depend on physical
+    order. A second run of make models must give the same sums — that is the
+    check that the ordering inside the deduplication is deterministic.
     """
     print()
-    print("Контрольные суммы витрин (двойной прогон обязан дать те же):")
+    print("Mart checksums (a second run must give the same ones):")
     for table in ("marts.mart_store_daily_sales",
                   "marts.mart_store_daily_conversion",
                   "marts.mart_store_daily_sales_trend"):
@@ -558,7 +567,7 @@ def main() -> int:
         data = load(conn)
 
         print()
-        print("Сверка витрин с сырым слоем")
+        print("Reconciling the marts against the raw layer")
         print()
 
         check_grain(data)
@@ -574,12 +583,12 @@ def main() -> int:
     failed = [name for name, ok, _ in RESULTS if not ok]
     print()
     if failed:
-        print("Провалено %d проверок из %d:" % (len(failed), len(RESULTS)))
+        print("%d of %d checks failed:" % (len(failed), len(RESULTS)))
         for name in failed:
             print("  -", name)
         return 1
 
-    print("Все %d проверок сошлись." % len(RESULTS))
+    print("All %d checks agree." % len(RESULTS))
     return 0
 
 

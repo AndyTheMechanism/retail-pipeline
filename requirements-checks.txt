@@ -1,8 +1,8 @@
-# Окружение сверки, отдельное по той же причине, что и у dbt.
+# The reconciliation environment, separate for the same reason as dbt's.
 #
-# Pandas не нужен ни генератору, ни моделям. В requirements.txt генератора
-# намеренно ровно одна зависимость - там даже numpy не заводили, потому что
-# объяснять его было бы нечем, - и тащить туда pandas ради разовой проверки
-# значит ломать это решение задним числом.
+# Pandas is needed by neither the generator nor the models. The generator's
+# requirements.txt deliberately holds exactly one dependency — not even numpy
+# got in, because there would have been no way to justify it — and dragging
+# pandas in for a one-off check would undo that decision after the fact.
 pandas>=2.2
 psycopg[binary]>=3.2

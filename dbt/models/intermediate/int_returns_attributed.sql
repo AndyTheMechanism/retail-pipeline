@@ -1,18 +1,20 @@
--- Возврат, привязанный к магазину через свой заказ.
+-- A return attached to a store through its order.
 --
--- Модель существует не для красоты слоев: в raw.returns нет store_id вовсе.
--- Возврат знает только идентификатор заказа, и без этой привязки отнести его к
--- магазину нельзя ничем.
+-- The model does not exist for the beauty of the layers: raw.returns has no
+-- store_id at all. A return knows only the order identifier, and without this
+-- attachment nothing ties it to a store.
 --
--- Здесь же сведены две оси даты, между которыми выбирает витрина:
--- order_date - когда покупку сделали, returned_date - когда возврат приехал.
--- Витрина продаж относит возврат к первой, и поэтому вчерашнее число меняется;
--- вторая остается рядом, чтобы было видно, откуда взялось изменение.
+-- The two date axes the mart chooses between are brought together here as well:
+-- order_date — when the purchase was made, returned_date — when the return
+-- arrived. The sales mart attributes a return to the first, which is why
+-- yesterday's number moves; the second stays alongside so it is visible where
+-- the change came from.
 --
--- Джойн левый по той же причине, что и в сборке чека: возврат-сирота должен
--- остаться видимым со store_id = null, а не исчезнуть до того, как его найдет
--- тест not_null на store_id. is_cancelled тянется сюда как раз для проверки -
--- возврат к отмененному заказу невозможен по смыслу, и это спрашивает
+-- It is a left join for the same reason as in the assembled order: an orphaned
+-- return has to stay visible with store_id = null rather than disappear before
+-- the not_null test on store_id finds it. is_cancelled is pulled in here for
+-- exactly one check — a return against a cancelled order is impossible by
+-- definition, and that is the question asked by
 -- tests/assert_returns_belong_to_live_orders.sql.
 
 with returns as (

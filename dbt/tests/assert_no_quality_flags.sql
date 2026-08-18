@@ -1,13 +1,13 @@
--- Флаги качества видны в прогоне, но цепочку не роняют.
+-- Quality flags are visible in a run, but they do not break the chain.
 --
--- Единственный тест в проекте с severity warn, и стоит он здесь ровно затем,
--- чтобы разница между стопом и флагом была видна в самом инструменте, а не
--- только на словах. Механизм один и тот же - тест, который вернул строки;
--- отличается последствие.
+-- The only test in the project with severity warn, and it is here precisely so
+-- that the difference between a stop and a flag is visible in the tool itself
+-- rather than only in words. The mechanism is identical — a test that returned
+-- rows; what differs is the consequence.
 --
--- Без него флаги остались бы данными, которые надо не забыть посмотреть, а
--- забывают всегда. С ним каждый прогон печатает, сколько магазино-дней
--- помечено, и молча зеленым не бывает.
+-- Without it the flags would be data that someone has to remember to look at,
+-- and that always gets forgotten. With it every run prints how many store-days
+-- are flagged, and no run comes back green in silence.
 
 {{ config(severity = 'warn') }}
 

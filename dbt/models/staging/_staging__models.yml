@@ -1,41 +1,41 @@
 version: 2
 
-# Проверки здесь роняют цепочку, а не помечают. Все, что в этом файле, - это
-# инварианты: утверждения, которые обязаны быть верны всегда, и если они
-# неверны, считать дальше нельзя. Флаги качества живут не в тестах, а в модели
-# mart_store_daily_quality.
+# The checks here break the chain rather than raise a flag. Everything in this
+# file is an invariant: a statement that must always hold, and if it does not,
+# nothing may be counted on top of it. Quality flags live not in tests but in
+# the mart_store_daily_quality model.
 #
-# Описания колонок здесь не украшение: из них собирается словарь (DICTIONARY.md),
-# и колонка без описания в нем видна дырой.
+# Column descriptions here are not decoration: the dictionary (DICTIONARY.md) is
+# built out of them, and a column without one shows up in it as a hole.
 
 models:
   - name: stg_stores
-    description: Справочник магазинов. Зерно - store_id.
+    description: Store reference table. Grain — store_id.
     columns:
       - name: store_id
-        description: Идентификатор магазина. Сквозной по всему проекту.
+        description: Store identifier. The same one throughout the project.
         data_tests: [unique, not_null]
       - name: store_code
-        description: Код точки в виде S0001. Витринами не используется, живет для читаемости.
+        description: Store code in the form S0001. The marts do not use it; it exists for readability.
       - name: city
-        description: Город. Один из тридцати, справочный атрибут.
+        description: City. One of thirty, a reference attribute.
       - name: store_format
-        description: Формат точки - малый, средний или большой. Определяет базовый поток заказов.
+        description: Store format — small, medium or large. It sets the store's baseline order volume.
       - name: opened_on
         description: >
-          Дата открытия. До нее у магазина нет ни заказов, ни трафика, и на
-          этом стоит зерно витрин: 12 магазинов из 120 открылись внутри
-          горизонта, и их пустые дни - не пропущенные данные.
+          Opening date. Before it the store has neither orders nor footfall, and
+          the grain of the marts rests on that: 12 stores out of 120 opened
+          inside the horizon, and their empty days are not missing data.
         data_tests: [not_null]
 
   - name: stg_orders
-    description: Шапка чека. Зерно - order_id.
+    description: Order header. Grain — order_id.
     columns:
       - name: order_id
-        description: Идентификатор заказа. Кодирует дату и магазин.
+        description: Order identifier. It encodes the date and the store.
         data_tests: [unique, not_null]
       - name: store_id
-        description: Магазин, оформивший заказ.
+        description: The store that placed the order.
         data_tests:
           - not_null
           - relationships:
@@ -43,52 +43,54 @@ models:
                 to: ref('stg_stores')
                 field: store_id
       - name: order_ts
-        description: Отметка времени заказа. Витринами не используется - зерно дневное.
+        description: Order timestamp. The marts do not use it — the grain is daily.
       - name: order_date
-        description: Дата заказа, ключ партиции в сыром слое.
+        description: Order date, the partition key in the raw layer.
         data_tests: [not_null]
       - name: channel
-        description: Значение источника, "офлайн", "сайт" или "приложение".
+        description: Source value, "offline", "web" or "app".
         data_tests:
-          # Новое значение статуса - это не сбой данных, а изменение контракта
-          # источника, о котором никто не предупредил. Молча оно превратилось бы
-          # в неверную выручку: is_cancelled считается сравнением с одной
-          # строкой, и все незнакомое стало бы "оформлен".
+          # A new channel value is not a data failure but a change to the
+          # source contract that nobody announced. Unchecked it costs
+          # conversion: an unfamiliar channel would not land in offline, and
+          # conversion for the store would drift downwards without a trace.
           - accepted_values:
               arguments:
-                values: ["офлайн", "сайт", "приложение"]
+                values: ["offline", "web", "app"]
       - name: status
-        description: Значение источника, "оформлен" или "отменен".
+        description: Source value, "placed" or "cancelled".
         data_tests:
-          # То же про статус, и цена ошибки тут выше: незнакомый канал не попал
-          # бы в офлайн, и конверсия по магазину поехала бы вниз без следа.
+          # The same goes for the status, and a mistake costs more here:
+          # is_cancelled is computed by comparison against a single string, so
+          # anything unfamiliar would come out as "placed" and turn into wrong
+          # revenue.
           - accepted_values:
               arguments:
-                values: ["оформлен", "отменен"]
+                values: ["placed", "cancelled"]
       - name: customer_id
         description: >
-          Идентификатор покупателя, заполнен у 70% заказов. Задел под когорты;
-          ни одна текущая витрина его не использует.
+          Customer identifier, filled in on 70% of orders. Groundwork for
+          cohorts; no current mart uses it.
       - name: is_cancelled
-        description: Признак отмены. Отмененный заказ не дает ни выручки, ни возвратов.
+        description: Cancellation flag. A cancelled order yields neither revenue nor returns.
         data_tests: [not_null]
       - name: is_offline
         description: >
-          Признак офлайн-заказа. Числитель конверсии считается только по нему -
-          дверной счетчик не видит ни сайт, ни приложение.
+          Offline-order flag. The numerator of conversion is counted on it
+          alone — the door counter sees neither the website nor the app.
         data_tests: [not_null]
 
   - name: stg_order_items
     description: >
-      Позиции заказа, по одной строке на позицию. Единственное место, где
-      восстанавливается зерно (order_id, line_no) после дублей выгрузки.
+      Order lines, one row per line. The single place where the
+      (order_id, line_no) grain is restored after the export duplicates.
     data_tests:
       - unique_grain:
           arguments:
             columns: [order_id, line_no]
     columns:
       - name: order_id
-        description: Заказ, к которому относится позиция.
+        description: The order the line belongs to.
         data_tests:
           - not_null
           - relationships:
@@ -97,80 +99,85 @@ models:
                 field: order_id
       - name: order_date
         description: >
-          Дата заказа, денормализованная в позицию как ключ партиции. Входит в
-          partition by оконных функций ради плана запроса - см. QUERY-PLAN.md.
+          Order date, denormalised onto the line as the partition key. The
+          window functions partition by it for the sake of the query plan — see
+          QUERY-PLAN.md.
       - name: line_no
-        description: Номер позиции внутри заказа. Вместе с order_id образует зерно.
+        description: Line number within the order. Together with order_id it forms the grain.
         data_tests: [not_null]
       - name: sku
         description: >
-          Непрозрачный код позиции. Ни категории, ни бренда, ни закупочной цены
-          здесь нет и не будет - это категорийный менеджмент, другая профессия.
+          An opaque item code. There is no category, no brand and no cost price
+          here, and there will not be — that is category management, a different
+          profession.
         data_tests: [not_null]
       - name: quantity
-        description: Количество. Ноль встречается - это заложенный выброс.
+        description: Quantity. Zero does occur — that is a planted outlier.
         data_tests: [not_null, not_negative]
       - name: unit_price
-        description: Цена за единицу, от 199 до 19990.
+        description: Price per unit, from 199 to 19990.
       - name: line_amount
         description: >
-          Сумма позиции. Может быть отрицательной: выбросы намеренно не
-          отфильтрованы, и знак здесь не проверяется - их ловит флаг, а не гейт.
+          Line amount. It can be negative: the outliers are deliberately left
+          unfiltered, and the sign is not checked here — they are caught by a
+          flag, not by a gate.
         data_tests: [not_null]
       - name: source_copies
         description: >
-          Сколько строк на эту позицию было в источнике. Единица - норма,
-          больше единицы означает дубль выгрузки. Колонка делает дедупликацию
-          проверяемым фактом, а не подразумеваемой.
+          How many rows the source held for this line. One is normal, more than
+          one means an export duplicate. The column turns deduplication into a
+          checkable fact rather than an assumption.
         data_tests: [not_null]
 
   - name: stg_returns
-    description: Возвраты. Зерно - return_id.
+    description: Returns. Grain — return_id.
     columns:
       - name: return_id
-        description: Идентификатор возврата, выводится из идентификатора заказа.
+        description: Return identifier, derived from the order identifier.
         data_tests: [unique, not_null]
       - name: order_id
-        description: Заказ, к которому относится возврат.
+        description: The order the return belongs to.
         data_tests:
-          # Возврат без заказа ломает выручку нетто: сумма вычитается, а из
-          # чего - неизвестно. Это стоп, а не флаг.
+          # A return without an order breaks net revenue: an amount is
+          # subtracted, and what it is subtracted from is unknown. That is a
+          # stop, not a flag.
           - not_null
           - relationships:
               arguments:
                 to: ref('stg_orders')
                 field: order_id
       - name: order_date
-        description: Дата исходного заказа. К ней возврат относится в витрине продаж.
+        description: Date of the original order. This is the date the sales mart attributes the return to.
         data_tests: [not_null]
       - name: line_no
-        description: Позиция заказа, которую вернули.
+        description: The order line that was returned.
       - name: returned_date
-        description: Дата приезда возврата. По ней нарезана партиция в сыром слое.
+        description: The date the return arrived. The raw layer is partitioned on it.
         data_tests: [not_null]
       - name: quantity
-        description: Возвращенное количество, не больше купленного.
+        description: The quantity returned, never more than was bought.
       - name: returned_amount
-        description: Сумма возврата. Именно она вычитается из выручки дня покупки.
+        description: Return amount. This is what gets subtracted from the revenue of the purchase day.
       - name: delay_days
         description: >
-          Задержка возврата в днях. Медиана 2, 95-й перцентиль 19, 99-й 28,
-          максимум 30. На этом числе стоит размер окна пересчета.
+          Return delay in days. Median 2, 95th percentile 19, 99th 28, maximum
+          30. The size of the reprocessing window rests on this number.
         data_tests:
-          # Отрицательная задержка означала бы возврат раньше покупки.
+          # A negative delay would mean a return arriving before the purchase.
           - not_null
           - not_negative
 
   - name: stg_cancellations
     description: >
-      Отмены. Витринами не используется намеренно: статус уже есть в заказе.
-      Нужна для проверки ссылочной целостности и согласия с orders.status.
+      Cancellations. Deliberately unused by the marts: the status is already on
+      the order. It is here to check referential integrity and agreement with
+      orders.status.
     columns:
       - name: cancellation_id
-        description: Идентификатор отмены. Совпадает с идентификатором заказа.
+        description: Cancellation identifier. It matches the order identifier.
         data_tests: [unique, not_null]
       - name: order_id
-        description: Отмененный заказ.
+        description: The cancelled order.
         data_tests:
           - not_null
           - relationships:
@@ -178,23 +185,23 @@ models:
                 to: ref('stg_orders')
                 field: order_id
       - name: order_date
-        description: Дата исходного заказа.
+        description: Date of the original order.
       - name: cancelled_date
-        description: Дата отмены, на 0-2 дня позже даты заказа.
+        description: Cancellation date, 0-2 days after the order date.
         data_tests: [not_null]
       - name: reason
-        description: Причина отмены из источника - одна из четырех.
+        description: Cancellation reason from the source — one of four.
         data_tests: [not_null]
 
   - name: stg_store_traffic
-    description: Дневной трафик точек. Зерно - (store_id, traffic_date).
+    description: Daily footfall per store. Grain — (store_id, traffic_date).
     data_tests:
       - unique_grain:
           arguments:
             columns: [store_id, traffic_date]
     columns:
       - name: store_id
-        description: Магазин.
+        description: The store.
         data_tests:
           - not_null
           - relationships:
@@ -202,11 +209,12 @@ models:
                 to: ref('stg_stores')
                 field: store_id
       - name: traffic_date
-        description: Дата наблюдения трафика.
+        description: The date the footfall was observed.
         data_tests: [not_null]
       - name: visitors
         description: >
-          Посетители по дверному счетчику. Ноль здесь не приводится к null и не
-          считается ошибкой: суждение о том, считал ли прибор, выносит флаг
-          качества, где рядом видны чеки.
+          Visitors as counted by the door counter. A zero is not coerced to null
+          here and is not treated as an error: whether the device was counting
+          at all is judged by a quality flag, which shows the order count right
+          beside it.
         data_tests: [not_null, not_negative]

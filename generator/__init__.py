@@ -1,6 +1,6 @@
-"""Генератор синтетики розничной воронки.
+"""Synthetic data generator for a retail funnel.
 
-Данные в репозитории не лежат - лежит то, что их порождает. Любой прогон с тем
-же сидом дает тот же набор, поэтому коммитить сами данные незачем, а сверять
-результат можно контрольной суммой.
+The data is not committed — what produces it is. Any run with the same seed
+gives the same set, so there is no point in committing the data itself, and
+the result can be verified with a checksum.
 """

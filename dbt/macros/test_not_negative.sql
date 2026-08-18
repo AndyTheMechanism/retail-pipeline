@@ -1,15 +1,15 @@
 {#
-    Значение не бывает отрицательным.
+    A value is never negative.
 
-    Второй тест, ради которого обычно тянут dbt_utils. Здесь он нужен для
-    величин, у которых отрицательность означает не редкий случай, а
-    невозможность: возврат раньше заказа, отрицательное число посетителей,
-    отрицательное количество в позиции.
+    The second test people normally reach for dbt_utils to get. Here it is
+    needed for quantities where a negative value means not a rare case but an
+    impossibility: a return before its order, a negative number of visitors, a
+    negative quantity on a line.
 
-    Ноль допускается намеренно. Нулевое количество - это заложенный выброс, и
-    ловить его должен тест про выбросы, а не тест про знак: смешивать две
-    разные претензии в одной проверке значит получить непонятный отчет о
-    падении.
+    Zero is allowed deliberately. A zero quantity is one of the planted
+    outliers, and catching it is the job of the outlier test, not of a test
+    about signs: mixing two different complaints into one check gets you a
+    failure report nobody can read.
 #}
 {% test not_negative(model, column_name) %}
 

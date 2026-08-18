@@ -1,24 +1,27 @@
-"""Три сценария отладки - то, что показывают на экране.
+"""Three debugging scenarios — what you put on the screen.
 
-Каждый воспроизводится с нуля одной командой и опирается на дефекты, заложенные
-в сырой слой генератором, а не подстроенные под показ. Ничего специально
-ломать не нужно: поздний возврат, непришедшая партиция и битый счетчик уже
-лежат в данных, и даты им сценарии не назначают, а спрашивают у карты дефектов.
+Each one reproduces from scratch with one command and rests on defects planted
+into the raw layer by the generator rather than staged for the demo. Nothing has
+to be broken on purpose: the late return, the partition that never arrived and
+the broken counter are already in the data, and the scenarios do not assign
+their dates, they ask the defect map.
 
-    make scenario-late-return        вчерашнее число изменилось, и видно почему
-    make scenario-missing-partition  источник не приехал, цепочка встала
-    make scenario-broken-counter     прибор врет, сеть считается дальше
+    make scenario-late-return        yesterday's number moved, and you can see why
+    make scenario-missing-partition  the source did not arrive, the chain stopped
+    make scenario-broken-counter     the device lies, the network still counts
 
-Считать пайплайн сценарии зовут теми же командами, что позвал бы человек, -
-`make run`, а не свой обход моделей. Иначе показ доказывал бы работу показа.
+The scenarios run the pipeline with the same commands a person would use —
+`make run`, not a walk over the models of their own. Otherwise the demo would be
+proving that the demo works.
 
-Две операции в базе напрямую все же есть, и обе - в сценарии позднего возврата.
-Он отматывает время назад, а этого командами пайплайна не сделать: пайплайн
-умеет считать вперед, а не забывать. Поэтому сценарий удаляет из сырого слоя
-возвраты, которые "еще не приехали", и очищает снимок витрины, чтобы журнал
-ревизий заполнился с нуля на глазах. Обе операции названы вслух в выводе
-сценария, а удаленное возвращает само проигрывание.
+Two operations do go straight to the database, and both are in the late-return
+scenario. It winds time back, and the pipeline's own commands cannot do that:
+the pipeline knows how to compute forward, not how to forget. So the scenario
+deletes the returns that "have not arrived yet" from the raw layer and clears
+the mart snapshot, leaving the revision log to fill from nothing before your
+eyes. Both operations are named out loud in the scenario's output, and the
+replay itself puts back what was deleted.
 
-Сценарий умеет провалиться: если прогон закончился не так, как обещано, или
-витрина изменилась там, где не должна была, команда вернет ненулевой код.
+A scenario is able to fail: if a run did not end the way it promised, or the
+mart changed where it should not have, the command exits non-zero.
 """

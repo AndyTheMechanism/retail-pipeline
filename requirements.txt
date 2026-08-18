@@ -1,4 +1,4 @@
-# Одна зависимость. Генератор считает на стандартной библиотеке: random со
-# своим состоянием дает воспроизводимость по seed, а numpy пришлось бы
-# объяснять там, где объяснять нечего.
+# One dependency. The generator does its arithmetic on the standard library:
+# random with its own state gives reproducibility from a seed, and numpy would
+# have to be explained where there is nothing to explain.
 psycopg[binary]>=3.2

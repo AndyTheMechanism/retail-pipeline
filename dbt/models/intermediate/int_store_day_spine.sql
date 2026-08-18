@@ -1,20 +1,21 @@
--- Плотная решетка "магазин на день" - зерно обеих витрин.
+-- A dense "store by day" grid — the grain of both marts.
 --
--- Зачем она нужна. Без спайна витрина - это group by по тому, что есть, и день
--- с непришедшими данными выглядит как отсутствие строки. Тогда "магазин был
--- закрыт", "данные не приехали" и "продаж не было" неразличимы, а различает их
--- mart_store_daily_quality. Со спайном такой день виден строкой, где метрики
--- null, и это разные вещи: ноль означает "посчитали, и вышел ноль", null -
--- "считать не по чему".
+-- Why it is needed. Without a spine a mart is a group by over whatever is
+-- there, and a day whose data did not arrive looks like a missing row. Then
+-- "the store was closed", "the data did not arrive" and "there were no sales"
+-- are indistinguishable, and telling them apart is what
+-- mart_store_daily_quality is for. With a spine such a day shows up as a row
+-- with null metrics, and those are different things: zero means "we counted,
+-- and it came to zero", null means "there was nothing to count".
 --
--- Горизонт берется из наблюдаемых данных, а не константой из config.py.
--- Константа разъехалась бы с генератором молча, и заметили бы это по кривой
--- витрине, а не по ошибке.
+-- The horizon is taken from the observed data rather than from a constant in
+-- config.py. A constant would drift away from the generator silently, and the
+-- first sign of it would be a wrong number in a mart rather than an error.
 --
--- Срез по opened_on обязателен: 12 магазинов из 120 открылись внутри
--- горизонта, и дни до открытия - не пропущенные данные, а честная пустота.
--- Без среза решетка дала бы 65 520 строк вместо 62 690, то есть 2 830
--- выдуманных магазино-дней.
+-- Cutting on opened_on is mandatory: 12 stores out of 120 opened inside the
+-- horizon, and the days before an opening are honest emptiness rather than
+-- missing data. Without the cut the grid would give 65,520 rows instead of
+-- 62,690 — that is 2,830 invented store-days.
 
 with observed as (
     select min(order_date) as first_day, max(order_date) as last_day

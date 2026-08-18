@@ -1,20 +1,20 @@
--- Отмены.
+-- Cancellations.
 --
--- Витринами не используется, и это не забытая модель. Статус заказа лежит уже
--- в самом заказе, а здесь добавляются только дата отмены и причина - на них
--- витрины не стоят.
+-- Not used by any mart, and this is not a forgotten model. The order status
+-- already sits on the order itself, and all this adds is the cancellation date
+-- and the reason — no mart rests on either.
 --
--- Модель существует, потому что через нее проверяется ссылочная целостность и
--- согласие с orders.status: у каждого отмененного заказа должна быть ровно
--- одна строка отмены, и наоборот. Обе стороны сверяет
--- tests/assert_cancellations_agree_with_status.sql.
+-- The model exists because referential integrity and agreement with
+-- orders.status are checked through it: every cancelled order must have exactly
+-- one cancellation row, and the other way round. Both directions are reconciled
+-- by tests/assert_cancellations_agree_with_status.sql.
 --
--- Отсюда же видно, почему журнал ревизий стоит на возвратах. Генератор
--- проставляет статус в момент создания заказа, а cancelled_date ставит на 0-2
--- дня позже. То есть отмена в этих данных никогда не меняет вчерашнее число:
--- пересборка партиции заказов даст тот же статус. Единственный источник
--- ревизий - возвраты, и сценарий журнала ревизий построен на них, а не на
--- отменах.
+-- It also shows why the revision log rests on returns. The generator fixes the
+-- status at the moment the order is created and sets cancelled_date 0-2 days
+-- later. So a cancellation in this data never changes yesterday's number:
+-- rebuilding the orders partition gives the same status back. The only source
+-- of revisions is returns, and the revision-log scenario is built on them
+-- rather than on cancellations.
 
 with source as (
     select * from {{ source('raw', 'cancellations') }}

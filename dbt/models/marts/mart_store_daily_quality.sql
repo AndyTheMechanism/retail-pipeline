@@ -1,44 +1,46 @@
--- Флаги качества: что в этот день у этого магазина считать нельзя.
+-- Quality flags: what cannot be counted for this store on this day.
 --
--- Отдельная таблица, а не колонки в витринах, и это решение стоит объяснить.
--- Витрины отдают факты, а суждение о том, можно ли факту верить, - другая
--- сущность с другой судьбой: флаги добавляются и уточняются, их бывает
--- несколько на одну строку, и у каждого своя причина. Строкой это растет
--- естественно, колонкой - нет: каждый новый флаг менял бы схему обеих витрин.
--- В той же форме устроен журнал ревизий - mart_store_daily_revisions.
+-- A table of its own rather than columns on the marts, and that decision is
+-- worth explaining. The marts hand out facts, and the judgement about whether a
+-- fact can be trusted is a different kind of thing with a life of its own:
+-- flags get added and refined, there can be several of them on one row, and
+-- each has its own reason. As rows that grows naturally, as columns it does
+-- not: every new flag would change the schema of both marts. The revision
+-- log — mart_store_daily_revisions — is built in the same shape.
 --
--- Флаг не роняет цепочку и не подменяет число оценкой. Он говорит ровно одно:
--- этой цифре доверять нельзя, а остальная сеть считается как считалась. Разница
--- со стопом здесь не в тяжести проблемы, а в том, чинится ли она пересчетом.
--- Задвоенное зерно чинится, сломанный дверной счетчик - нет, и останавливать
--- из-за него всю сеть значит остаться без цифр по всем магазинам вместо
--- одного.
+-- A flag does not break the chain and does not replace a number with an
+-- estimate. It says exactly one thing: this number cannot be trusted, while the
+-- rest of the network is counted as it always was. The difference from a stop
+-- is not how bad the problem is, but whether reprocessing fixes it. A doubled
+-- grain can be fixed, a broken door counter cannot, and stopping the whole
+-- network over it means having no numbers for every store instead of one.
 --
--- Зерно: магазин, день, имя проверки. Имя английское - по нему фильтруют и
--- джойнят; причина русская - ее читает человек в отчете.
+-- Grain: store, day, check name. The name is for machines — you filter and
+-- join on it; the reason is for people — someone reads it in a report.
 
--- Модель пересобирается целиком, а не окном. Она читает обе витрины и все
--- возвраты, стоит доли секунды, и флаг, потерявшийся из-за границы окна, был
--- бы хуже любой экономии.
+-- The model is rebuilt in full rather than by window. It reads both marts and
+-- all returns, costs a fraction of a second, and a flag lost to a window
+-- boundary would be worse than any saving.
 
 {% set return_window_days = var('return_window_days') %}
 
 with conversion_above_threshold as (
-    -- Боевое правило из кейса про дверной счетчик: чеков больше, чем
-    -- посетителей, физически не бывает. Порог 0,95, а не 1,0, потому что
-    -- прибор врет раньше, чем упирается в равенство.
+    -- The rule comes from a real door-counter incident: there cannot
+    -- physically be more orders than visitors. The threshold is 0.95 rather
+    -- than 1.0, because the device starts lying before it reaches equality.
     --
-    -- Правило записано умножением, а не делением, намеренно: при нуле
-    -- посетителей отношение не существует, а произведение дает ноль, и живые
-    -- чеки при нулевом счетчике попадают под тот же флаг, а не выпадают из
-    -- проверки в null. Мертвый прибор - худший случай сломанного, и терять
-    -- его на форме записи было бы обидно.
+    -- The rule is written as a multiplication rather than a division, on
+    -- purpose: with zero visitors the ratio does not exist, while the product
+    -- gives zero, so live orders against a dead counter fall under the same
+    -- flag instead of dropping out of the check as a null. A dead device is
+    -- the worst case of a broken one, and losing it to the shape of an
+    -- expression would be a shame.
     select
         store_id,
         traffic_date as flag_date,
         'conversion_above_threshold' as check_name,
         format(
-            'чеков %s при %s посетителях - счетчику доверять нельзя',
+            '%s orders against %s visitors — the counter cannot be trusted',
             orders_offline, visitors
         ) as reason,
         orders_offline::numeric  as measured_value,
@@ -50,19 +52,20 @@ with conversion_above_threshold as (
 ),
 
 return_outside_window as (
-    -- Возврат, приехавший позже окна пересчета, меняет выручку дня, который
-    -- пересобирать уже не будут. Число за тот день останется неверным, и
-    -- узнать об этом можно только отсюда.
+    -- A return that arrived later than the reprocessing window changes the
+    -- revenue of a day that will not be rebuilt again. The number for that day
+    -- stays wrong, and the only way to find out is from here.
     --
-    -- Это флаг, а не стоп: данные в порядке, мало окно. Тест, который роняет
-    -- цепочку из-за того, что окно выбрано узко, останавливал бы работу
-    -- каждый день до тех пор, пока кто-нибудь не поменяет константу.
+    -- This is a flag, not a stop: the data is fine, it is the window that is
+    -- too small. A test that breaks the chain because the window was chosen
+    -- too narrow would stop work every day until somebody changed the
+    -- constant.
     select
         store_id,
         order_date as flag_date,
         'return_outside_window' as check_name,
         format(
-            'возвратов позже окна: %s, худший через %s дней при окне %s',
+            '%s returns arrived after the window, the worst one %s days out against a window of %s',
             count(*), max(delay_days), {{ return_window_days }}
         ) as reason,
         max(delay_days)::numeric as measured_value,
@@ -73,17 +76,17 @@ return_outside_window as (
 ),
 
 orders_partition_missing as (
-    -- День, за который из источника не пришло ни одной строки заказов.
+    -- A day for which not a single order row arrived from the source.
     --
-    -- Стопом это становится только для целевой даты прогона - ее проверяет
-    -- assert_source_is_fresh, и там цепочка встает. Дыра, оставшаяся в
-    -- истории, останавливать сегодняшнюю работу не должна, но и молчать о
-    -- себе не должна тоже: она отмечена здесь и видна запросом.
+    -- This becomes a stop only for the target run date — that one is checked
+    -- by assert_source_is_fresh, and there the chain halts. A hole left behind
+    -- in history must not stop today's work, but it must not keep quiet about
+    -- itself either: it is marked here and visible to a query.
     select
         store_id,
         order_date as flag_date,
         'orders_partition_missing' as check_name,
-        'за этот день не приехало ни одной строки заказов' as reason,
+        'not a single order row arrived for this day' as reason,
         0::numeric    as measured_value,
         null::numeric as threshold_value
     from {{ ref('mart_store_daily_sales') }}
@@ -95,7 +98,7 @@ traffic_partition_missing as (
         store_id,
         traffic_date as flag_date,
         'traffic_partition_missing' as check_name,
-        'за этот день не приехало ни одной строки трафика' as reason,
+        'not a single traffic row arrived for this day' as reason,
         0::numeric    as measured_value,
         null::numeric as threshold_value
     from {{ ref('mart_store_daily_conversion') }}

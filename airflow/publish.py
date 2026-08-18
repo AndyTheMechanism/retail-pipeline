@@ -1,14 +1,15 @@
-"""Что опубликовано за дату.
+"""What was published for a date.
 
-Последний шаг цепочки. Витрина к этому моменту уже обновлена - обновилась она
-ровно потому, что тесты прошли, - и задача печатает, что именно теперь лежит
-за эту дату: строки, выручка, флаги качества.
+The last step of the chain. By this point the mart is already updated — it
+updated precisely because the tests passed — and the task prints what now sits
+there for that date: rows, revenue, quality flags.
 
-Строчка с числами в логе прогона дороже, чем выглядит. Через неделю вопрос
-"а что вчера опубликовалось" решается чтением лога, а не походом в базу с
-восстановлением того, какой прогон когда был.
+A line of numbers in the run log is worth more than it looks. A week later
+the question "what did yesterday's run publish" is answered by reading the log
+rather than by going into the database and reconstructing which run happened
+when.
 
-Запускается из DAG. Руками - тоже можно:
+Called from the DAG. By hand works too:
 
     .venv/bin/python airflow/publish.py 2026-03-14
 """
@@ -21,17 +22,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from generator.load import connect  # noqa: E402  - после правки sys.path
+from generator.load import connect  # noqa: E402  - sys.path is patched above
 
 SUMMARY = """
 select
-    count(*)                                       as strok,
-    count(*) filter (where has_orders)              as s_zakazami,
-    coalesce(sum(orders_count), 0)                  as zakazov,
-    coalesce(sum(revenue_gross), 0)                 as vyruchka_brutto,
-    coalesce(sum(returns_amount), 0)                as vozvraty,
-    coalesce(sum(revenue_net), 0)                   as vyruchka_netto,
-    coalesce(sum(returns_arrived_amount), 0)        as vozvraty_priehali
+    count(*)                                       as mart_rows,
+    count(*) filter (where has_orders)              as rows_with_orders,
+    coalesce(sum(orders_count), 0)                  as orders,
+    coalesce(sum(revenue_gross), 0)                 as gross,
+    coalesce(sum(returns_amount), 0)                as returns_for_date,
+    coalesce(sum(revenue_net), 0)                   as net,
+    coalesce(sum(returns_arrived_amount), 0)        as returns_arrived
 from marts.mart_store_daily_sales
 where order_date = %s
 """
@@ -44,18 +45,20 @@ group by check_name
 order by 2 desc
 """
 
-# Окно пересчета: за какие еще даты витрина могла измениться этим прогоном.
+# The reprocessing window: which other dates this run could have changed the
+# mart for.
 WINDOW = """
 select count(*), coalesce(sum(revenue_net), 0)
 from marts.mart_store_daily_sales
 where order_date between %s and %s
 """
 
-# Размер окна не задан здесь константой намеренно. Он живет в переменных
-# dbt/dbt_project.yml, а сюда попадает через данные: в таблице качества лежит
-# тот порог, с которым флаг "возврат вне окна" реально сравнивал. Второе
-# определение числа рядом с первым разъехалось бы с ним при первой же правке -
-# именно это и случилось однажды с константой в DAG.
+# The window size is deliberately not a constant here. It lives in the vars of
+# dbt/dbt_project.yml and reaches this file through the data: the quality table
+# carries the very threshold the "return outside the window" flag compared
+# against. A second definition of the number next to the first would part ways
+# with it at the first edit — which is exactly what once happened to a constant
+# in the DAG.
 WINDOW_DAYS = """
 select distinct threshold_value::int
 from marts.mart_store_daily_quality
@@ -65,7 +68,7 @@ where check_name = 'return_outside_window'
 
 def main(argv: list[str]) -> int:
     if len(argv) != 2:
-        print("Нужна дата: publish.py 2026-03-14")
+        print("A date is required: publish.py 2026-03-14")
         return 1
 
     run_date = date.fromisoformat(argv[1])
@@ -82,34 +85,36 @@ def main(argv: list[str]) -> int:
             else None
         )
 
-    strok, s_zakazami, zakazov, brutto, vozvraty, netto, priehali = row
+    mart_rows, rows_with_orders, orders, gross, returns_for_date, net, arrived = row
 
-    print("Опубликовано за %s" % run_date)
+    print("Published for %s" % run_date)
     print()
-    print("  строк в витрине     %d, из них с заказами %d" % (strok, s_zakazami))
-    print("  заказов             %s" % f"{zakazov:,}".replace(",", " "))
-    print("  выручка брутто      %s" % f"{brutto:,.2f}".replace(",", " "))
-    print("  возвраты к этой дате %s" % f"{vozvraty:,.2f}".replace(",", " "))
-    print("  выручка нетто       %s" % f"{netto:,.2f}".replace(",", " "))
+    print("  rows in the mart      %d, of which %d have orders" % (mart_rows, rows_with_orders))
+    print("  orders                %s" % f"{orders:,}")
+    print("  gross revenue         %s" % f"{gross:,.2f}")
+    print("  returns for this date %s" % f"{returns_for_date:,.2f}")
+    print("  net revenue           %s" % f"{net:,.2f}")
     print()
-    print("  возвраты, приехавшие в этот день к заказам прошлых дат: %s"
-          % f"{priehali:,.2f}".replace(",", " "))
+    print("  returns that arrived on this day against orders from earlier dates: %s"
+          % f"{arrived:,.2f}")
     if window is not None:
-        print("  окно пересчета %d дней: строк %d, нетто %s"
-              % (window_days, window[0], f"{window[1]:,.2f}".replace(",", " ")))
+        print("  reprocessing window, %d days: rows %d, net %s"
+              % (window_days, window[0], f"{window[1]:,.2f}"))
     else:
-        # Флаг "возврат вне окна" ни разу не сработал, и размер окна из данных
-        # не восстановить. Это не ошибка публикации, а отсутствие наблюдений.
-        print("  окно пересчета: за него ничего не выпадало, размер по данным не виден")
+        # The "return outside the window" flag has never fired, so the window
+        # size cannot be recovered from the data. That is not a publication
+        # error but an absence of observations.
+        print("  reprocessing window: nothing has ever fallen outside it, "
+              "so its size cannot be read off the data")
 
     if flags:
         print()
-        print("  флаги качества за эту дату:")
+        print("  quality flags for this date:")
         for name, count in flags:
             print("    %-28s %d" % (name, count))
     else:
         print()
-        print("  флагов качества за эту дату нет")
+        print("  no quality flags for this date")
 
     return 0
 

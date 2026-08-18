@@ -1,10 +1,10 @@
-"""Командный интерфейс генератора.
+"""The generator's command-line interface.
 
-    python -m generator seed              полный прогон за весь горизонт
-    python -m generator day 2026-03-14    пересобрать одну партицию
-    python -m generator defects           карта заложенных дефектов
-    python -m generator verify            контрольные суммы таблиц
-    python -m generator measure-returns   распределение задержки возвратов
+    python -m generator seed              full run across the whole horizon
+    python -m generator day 2026-03-14    rebuild a single partition
+    python -m generator defects           map of the planted defects
+    python -m generator verify            table checksums
+    python -m generator measure-returns   distribution of return delay
 """
 
 from __future__ import annotations
@@ -19,8 +19,9 @@ from . import load
 from .config import CANCELLATION_MAX_DELAY_DAYS, MAX_RETURN_DELAY_DAYS, Config
 from .model import build_stores, generate_day
 
-# На сколько дней назад нужно оглянуться, чтобы собрать партицию за дату.
-# Это максимум из всех задержек - возвраты сейчас глубже отмен.
+# How far back a run has to look to assemble the partition for one date.
+# It is the maximum of all the delays — returns currently run deeper than
+# cancellations.
 LOOKBACK_DAYS = max(MAX_RETURN_DELAY_DAYS, CANCELLATION_MAX_DELAY_DAYS)
 
 
@@ -36,9 +37,10 @@ def cmd_seed(config: Config) -> int:
         load.apply_schema(conn)
         load.load_stores(conn, stores)
 
-        # Возвраты и отмены приезжают позже своего заказа, поэтому копятся,
-        # пока их дата не наступит. Партиция за дату D полна ровно тогда,
-        # когда сгенерирован день D: глубже задержки не бывает.
+        # Returns and cancellations arrive later than their order, so they pile
+        # up until their date comes round. The partition for date D is
+        # complete exactly when day D has been generated: nothing arrives from
+        # deeper than the delay.
         pending_returns: dict[date, list] = {}
         pending_cancels: dict[date, list] = {}
 
@@ -67,7 +69,7 @@ def cmd_seed(config: Config) -> int:
             if position % 30 == 0 or position == len(all_dates):
                 done = position / len(all_dates)
                 print(
-                    "\r  %s  %3.0f%%  заказов %s" % (day, done * 100, f"{totals['orders']:,}".replace(",", " ")),
+                    "\r  %s  %3.0f%%  orders %s" % (day, done * 100, f"{totals['orders']:,}"),
                     end="",
                     flush=True,
                 )
@@ -77,22 +79,23 @@ def cmd_seed(config: Config) -> int:
     elapsed = time.monotonic() - started
     print()
     for name, value in totals.items():
-        print("  %-14s %s" % (name, f"{value:,}".replace(",", " ")))
+        print("  %-14s %s" % (name, f"{value:,}"))
     print()
-    print("  готово за %.0f с" % elapsed)
+    print("  done in %.0f s" % elapsed)
     print()
-    print("  Хвост возвратов, приехавших после конца горизонта, отброшен")
-    print("  намеренно: партиции для них нет. По той же причине в первые")
-    print("  %d дней возвратов меньше - у набора нет предыстории." % LOOKBACK_DAYS)
+    print("  The tail of returns arriving after the end of the horizon is dropped")
+    print("  on purpose: there is no partition to hold them. For the same reason")
+    print("  the first %d days hold fewer returns — the data set has no past." % LOOKBACK_DAYS)
     return 0
 
 
 def cmd_day(config: Config, target: date) -> int:
-    """Пересобрать одну партицию - этим работает задача land_partition.
+    """Rebuild a single partition — this is what the land_partition task runs.
 
-    Возвраты и отмены за дату восстанавливаются оглядкой назад: их порождают
-    заказы прошлых дней, а генерация дня детерминирована, поэтому те же заказы
-    получаются заново без обращения к базе.
+    Returns and cancellations for a date are reconstructed by looking back:
+    they come from orders of earlier days, and generating a day is
+    deterministic, so the same orders come out again without going to the
+    database.
     """
     stores = build_stores(config)
     lookback_start = target - timedelta(days=LOOKBACK_DAYS)
@@ -125,7 +128,7 @@ def cmd_day(config: Config, target: date) -> int:
         }
         conn.commit()
 
-    print("Партиция за %s пересобрана, оглядка назад %d дней:" % (target, LOOKBACK_DAYS))
+    print("Partition for %s rebuilt, looking %d days back:" % (target, LOOKBACK_DAYS))
     for name, value in counts.items():
         print("  %-14s %d" % (name, value))
     return 0
@@ -139,17 +142,18 @@ def cmd_defects(config: Config) -> int:
 def cmd_verify(config: Config) -> int:
     with load.connect() as conn:
         digests = load.all_digests(conn)
-    print("%-20s %12s  %s" % ("таблица", "строк", "контрольная сумма"))
+    print("%-20s %12s  %s" % ("table", "rows", "checksum"))
     for table, (count, digest) in digests.items():
-        print("%-20s %12s  %s" % (table, f"{count:,}".replace(",", " "), digest))
+        print("%-20s %12s  %s" % (table, f"{count:,}", digest))
     return 0
 
 
 def cmd_measure_returns(config: Config) -> int:
-    """Замер, от которого зависит размер окна пересчета.
+    """The measurement that decides the size of the reprocessing window.
 
-    Число берется из данных, а не из констант генератора. Так и должно быть:
-    окно обосновано наблюдением, а не тем, что кто-то так задумал.
+    The number comes from the data, not from the generator's constants. That
+    is how it should be: the window is justified by an observation, not by
+    somebody's say-so.
     """
     query = """
         WITH delays AS (
@@ -170,28 +174,28 @@ def cmd_measure_returns(config: Config) -> int:
         row = conn.execute(query).fetchone()
 
     if not row or not row[0]:
-        print("Возвратов в базе нет - сначала make seed")
+        print("No returns in the database — run make seed first")
         return 1
 
     total, p50, p90, p95, p99, worst, over7, over14 = row
-    print("Задержка возврата, замер по %s строкам" % f"{total:,}".replace(",", " "))
+    print("Return delay, measured across %s rows" % f"{total:,}")
     print()
-    print("  медиана        %5.1f дн" % p50)
-    print("  90-й перцентиль %4.1f дн" % p90)
-    print("  95-й перцентиль %4.1f дн" % p95)
-    print("  99-й перцентиль %4.1f дн" % p99)
-    print("  максимум       %5d дн" % worst)
+    print("  median         %5.1f days" % p50)
+    print("  90th percentile %4.1f days" % p90)
+    print("  95th percentile %4.1f days" % p95)
+    print("  99th percentile %4.1f days" % p99)
+    print("  maximum        %5d days" % worst)
     print()
-    print("  приезжает позже 7 дней   %5.2f%%" % (over7 * 100))
-    print("  приезжает позже 14 дней  %5.2f%%" % (over14 * 100))
+    print("  arrives later than 7 days   %5.2f%%" % (over7 * 100))
+    print("  arrives later than 14 days  %5.2f%%" % (over14 * 100))
     print()
-    print("  По этим числам выбрано окно пересчета - 28 дней. Флаг")
-    print("  return_outside_window ловит те возвраты, что в него не влезли.")
+    print("  These numbers are what the 28-day reprocessing window rests on.")
+    print("  The return_outside_window flag catches what did not fit inside it.")
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="generator", description="Генератор синтетики розничной воронки")
+    parser = argparse.ArgumentParser(prog="generator", description="Synthetic data generator for a retail funnel")
     parser.add_argument("--seed", type=int, default=Config.seed)
     parser.add_argument("--stores", type=int, default=Config.store_count)
     parser.add_argument("--start", type=_parse_date, default=Config.start_date)

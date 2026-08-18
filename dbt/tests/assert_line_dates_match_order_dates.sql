@@ -1,10 +1,11 @@
--- Дата позиции совпадает с датой ее заказа.
+-- A line's date matches the date of its order.
 --
--- В сыром слое order_date денормализован в позиции как ключ партиции, поэтому
--- одна и та же дата лежит в двух местах. Сборка чека намеренно НЕ джойнит по
--- обеим датам: джойн по расходящимся полям спрятал бы расхождение как
--- отсутствующую строку, и позиция просто исчезла бы из выручки. Инвариант
--- проверяется здесь, где он виден, а не маскируется условием соединения.
+-- In the raw layer order_date is denormalised onto the line as the partition
+-- key, so the same date sits in two places. Assembling the order lines
+-- deliberately does NOT join on both dates: joining on fields that disagree
+-- would hide the discrepancy as a missing row, and the line would just vanish
+-- from revenue. The invariant is checked here, where it is visible, rather
+-- than masked by a join condition.
 
 select
     l.order_id,

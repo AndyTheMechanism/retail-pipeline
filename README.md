@@ -183,7 +183,7 @@ instead of one.
 | A missing partition left behind in history | Flag |
 
 Stops are ordinary dbt tests. Flags are rows in
-`marts.mart_store_daily_quality`: store, day, check name, reason in Russian. A
+`marts.mart_store_daily_quality`: store, day, check name, reason in prose. A
 table of its own rather than columns on the marts, because a single row can
 carry several flags and there will be more of them over time: as rows that
 grows naturally, as columns it does not. On top of that, one test with `warn`
@@ -439,9 +439,9 @@ revised along the way — the decision about making the intermediate layer
 incremental, for instance, was reversed at the last stage on a measurement
 rather than on taste.
 
-Commit subjects are in English, bodies in Russian, matching the comments in the
-code. The first five commits are English throughout; rewriting history for the
-sake of uniformity was not worth it.
+Commit subjects are in English and bodies in Russian: the project was written
+in Russian first and translated afterwards, and history is not rewritten to
+hide that. The first five commits are English throughout.
 
 ## Licence
 

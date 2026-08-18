@@ -1,16 +1,16 @@
-"""Сборка словаря таблиц и колонок из метаданных dbt.
+"""Builds the table and column dictionary out of dbt metadata.
 
-Словарь не пишется руками. Руками пишутся описания - в тех же yml, где стоят
-проверки, рядом с колонкой, которую описывают. Отсюда следует главное его
-свойство: он не может отстать от схемы, потому что собирается из нее.
+The dictionary is not written by hand. The descriptions are — in the same yml
+files where the checks live, next to the column they describe. Hence its main
+property: it cannot fall behind the schema, because it is built from it.
 
-Скрипт падает, если хоть у одной колонки нет описания. Это сделано намеренно:
-словарь с дырами хуже отсутствующего - по нему принимают решения, считая, что
-он полон. Пустая клетка в таблице читается как "тут нечего сказать", а значит
-надо либо сказать, либо убрать колонку.
+The script fails if even one column has no description. That is deliberate: a
+dictionary with holes is worse than no dictionary — people make decisions on it
+believing it to be complete. An empty cell reads as "there is nothing to say
+here", so either say something or drop the column.
 
-Читает dbt/target/catalog.json и manifest.json, пишет DICTIONARY.md.
-Запуск: make dictionary
+Reads dbt/target/catalog.json and manifest.json, writes DICTIONARY.md.
+Run: make dictionary
 """
 
 from __future__ import annotations
@@ -23,19 +23,21 @@ ROOT = Path(__file__).resolve().parents[1]
 TARGET = ROOT / "dbt" / "target"
 OUTPUT = ROOT / "DICTIONARY.md"
 
-# Порядок слоев - порядок движения данных, а не алфавит.
+# The order of the layers is the order the data moves in, not the alphabet.
 SCHEMA_ORDER = ["raw", "staging", "intermediate", "marts", "ops"]
 
 SCHEMA_TITLES = {
-    "raw": ("Сырой слой", "Выгрузка источника как она есть, вместе с дефектами. "
-                          "Первичных ключей и ограничений уникальности здесь нет намеренно."),
-    "staging": ("Слой staging", "Приведение формы: типы, имена, зерно. Ничего не считает "
-                                "и не чинит. Материализован представлениями."),
-    "intermediate": ("Промежуточный слой", "Сведение источников. Оставляет видимым все, "
-                                           "включая сироты, чтобы гейту было что ловить."),
-    "marts": ("Витрины", "То, что читает человек и дашборд."),
-    "ops": ("Служебное", "Механика, на которой стоит журнал ревизий. "
-                         "Читать руками не нужно."),
+    "raw": ("Raw layer", "The source export as it is, defects included. "
+                         "There are deliberately no primary keys and no uniqueness "
+                         "constraints here."),
+    "staging": ("Staging layer", "Fixes the shape: types, names, grain. Counts nothing "
+                                 "and repairs nothing. Materialised as views."),
+    "intermediate": ("Intermediate layer", "Brings the sources together. Leaves everything "
+                                           "visible, orphans included, so the gate has "
+                                           "something to catch."),
+    "marts": ("Marts", "What a human and a dashboard read."),
+    "ops": ("Internals", "The machinery the revision log rests on. "
+                         "Not meant to be read by hand."),
 }
 
 
@@ -43,13 +45,13 @@ def load() -> tuple[dict, dict]:
     catalog = TARGET / "catalog.json"
     manifest = TARGET / "manifest.json"
     if not catalog.exists() or not manifest.exists():
-        print("Нет метаданных dbt. Сначала: make docs")
+        print("No dbt metadata. Run make docs first.")
         raise SystemExit(1)
     return json.loads(catalog.read_text()), json.loads(manifest.read_text())
 
 
 def descriptions(manifest: dict) -> dict[str, dict]:
-    """Описания из yml: по узлу - описание объекта и словарь описаний колонок."""
+    """Descriptions from yml: per node, the object's own plus one per column."""
     out = {}
     for kind in ("nodes", "sources"):
         for key, node in manifest.get(kind, {}).items():
@@ -64,7 +66,7 @@ def descriptions(manifest: dict) -> dict[str, dict]:
 
 
 def clean(text: str) -> str:
-    """Многострочное описание из yml - в одну строку: словарь читают таблицей."""
+    """A yml description squashed onto one line: the dictionary is read as a table."""
     return " ".join(text.split())
 
 
@@ -90,29 +92,29 @@ def main() -> int:
     for obj in objects:
         col_docs = obj["doc"].get("columns", {})
         if not obj["doc"].get("description"):
-            gaps.append("%s.%s - нет описания объекта" % (obj["schema"], obj["name"]))
+            gaps.append("%s.%s - no object description" % (obj["schema"], obj["name"]))
         for col in obj["columns"]:
             if not col_docs.get(col["name"].lower()):
-                gaps.append("%s.%s.%s - нет описания колонки"
+                gaps.append("%s.%s.%s - no column description"
                             % (obj["schema"], obj["name"], col["name"]))
 
     lines = []
     add = lines.append
 
     total_columns = sum(len(o["columns"]) for o in objects)
-    add("# Словарь таблиц и колонок")
+    add("# Table and column dictionary")
     add("")
-    add("Собран из описаний в yml командой `make dictionary`. Руками не правится:")
-    add("правка потеряется при следующей сборке. Менять надо описание рядом с")
-    add("колонкой - там же, где стоят ее проверки.")
+    add("Built from the descriptions in yml by `make dictionary`. Not edited by hand:")
+    add("an edit is lost on the next build. Edit the description next to the column")
+    add("instead — in the same place as its checks.")
     add("")
-    add("Объектов: %d, колонок: %d. Колонок без описания: %d - сборка словаря"
+    add("Objects: %d, columns: %d. Columns with no description: %d — building the"
         % (len(objects), total_columns, len(gaps)))
-    add("падает, если их больше нуля.")
+    add("dictionary fails if that is more than zero.")
     add("")
-    add("Линейдж - `make docs`: dbt поднимает браузер, где видно, какая модель из")
-    add("чего собрана. Рисовать эту картинку руками нельзя - она разъедется с кодом")
-    add("в первую же неделю.")
+    add("Lineage is `make docs`: dbt opens a browser showing what each model is built")
+    add("from. That picture cannot be drawn by hand — it would part ways with the code")
+    add("within the first week.")
 
     for schema in SCHEMA_ORDER:
         in_schema = sorted([o for o in objects if o["schema"] == schema],
@@ -123,24 +125,24 @@ def main() -> int:
         add("")
         add("---")
         add("")
-        add("## %s - схема `%s`" % (title, schema))
+        add("## %s — schema `%s`" % (title, schema))
         if intro:
             add("")
             add(intro)
 
         for obj in in_schema:
-            kind = "представление" if obj["type"] == "VIEW" else "таблица"
+            kind = "view" if obj["type"] == "VIEW" else "table"
             add("")
             add("### `%s.%s`" % (obj["schema"], obj["name"]))
             add("")
             meta_bits = [kind]
             if obj["rows"] is not None:
-                meta_bits.append("строк %s" % f"{int(obj['rows']):,}".replace(",", " "))
+                meta_bits.append("rows %s" % f"{int(obj['rows']):,}")
             add("*%s*" % ", ".join(meta_bits))
             add("")
             add(clean(obj["doc"].get("description", "")))
             add("")
-            add("| Колонка | Тип | Что это |")
+            add("| Column | Type | What it is |")
             add("|---|---|---|")
             col_docs = obj["doc"].get("columns", {})
             for col in obj["columns"]:
@@ -153,16 +155,16 @@ def main() -> int:
     add("")
     OUTPUT.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    print("Записан %s: объектов %d, колонок %d" % (OUTPUT.name, len(objects), total_columns))
+    print("Wrote %s: objects %d, columns %d" % (OUTPUT.name, len(objects), total_columns))
 
     if gaps:
         print()
-        print("Словарь неполон, %d пропусков:" % len(gaps))
+        print("The dictionary is incomplete, %d gaps:" % len(gaps))
         for gap in gaps:
             print("  ", gap)
         return 1
 
-    print("Пропусков нет.")
+    print("No gaps.")
     return 0
 
 
