@@ -58,14 +58,14 @@ one. Each step builds its own virtual environment. On Windows, run it under WSL2
 
 ![Everything the sales mart is built from](images/dbt-lineage.png)
 
-Three layers, one directory each. `staging` fixes the shape and nothing else;
-`intermediate` brings sources together; `marts` hands out the numbers. The
-database schemas carry the same names.
-
 Above is everything the sales mart is built from — the raw layer on the left,
 the returns arriving on their own branch, the calendar spine feeding the grain.
 That is a filtered view; `make docs` opens the whole graph, all 21 objects of
 it.
+
+Three layers, one directory each. `staging` fixes the shape and nothing else;
+`intermediate` brings sources together; `marts` hands out the numbers. The
+database schemas carry the same names.
 
 The fact marts take their grain from a calendar rather than from the data —
 store by day from the store's opening date, exactly 62,690 rows. A day when nothing
@@ -165,7 +165,7 @@ returns the median delay is 2 days, the 95th percentile 19, the 99th 28.
 
 | Window | Returns left outside | Amount |
 |---|---|---|
-| 14 days | 10.5% | 38.5M |
+| 14 days | 10.53% | 38.5M |
 | 21 days | 3.47% | 12.6M |
 | **28 days** | **0.78%** | **2.6M** |
 

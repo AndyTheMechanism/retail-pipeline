@@ -43,7 +43,7 @@ vars:
   # the maximum 30. 0.78% of returns arrive later than 28 days, worth 2.6M
   # rubles — 0.72% of all returns and 0.025% of gross revenue. For comparison: a
   # 21-day window leaves 3.47% outside, worth 12.6M; a 14-day window leaves
-  # 10.5%, worth 38.5M.
+  # 10.53%, worth 38.5M.
   #
   # Why not 30, when the maximum in the data is exactly 30. Taking the observed
   # maximum means fitting the window to the sample and pretending the tail is
